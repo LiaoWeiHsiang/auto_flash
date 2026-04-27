@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Status Monitor</title>
+</head>
+<body>
+
+<h2>Status: <span id="status">---</span></h2>
+
+<input id="input" placeholder="Send value">
+<button onclick="sendValue()">Send</button>
+
+<script>
+async function update() {
+  const r = await fetch("/status");
+  const j = await r.json();
+  document.getElementById("status").innerText = j.status;
+}
+
+async function sendValue() {
+  const v = document.getElementById("input").value;
+  await fetch("/send", {
+    method: "POST",
+    body: v
+  });
+}
+
+setInterval(update, 1000);
+</script>
+
+</body>
+</html>
