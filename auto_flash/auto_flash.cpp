@@ -2,9 +2,12 @@
 #include <iostream>
 #include <string>
 #include <chrono>
+#include <atomic>
 #include "common/type.h"
 #include "comport/comport.h"
 #include "flash/flash.h"
+#include "utils/talker/talker.h"
+#include "utils/listener/listener.h"
 
 #include <queue>
 #include <set>
@@ -18,12 +21,13 @@ std::vector<int> current_coms;
 std::mutex com_mutex;
 std::condition_variable com_cv;
 
+bool auto_flash_status{false};
+bool auto_flash{false};
 
-
-
-
-void com_monitor()
+void com_monitor(const std::string& ip)
 {
+    std::string msg = "Heart Beat!!!";
+    Talker talker(ip, 9000);
     while (true)
     {
         std::vector<int> current_coms;
@@ -57,7 +61,24 @@ void com_monitor()
             }
         }
 
+        if (!talker.send_msg(MSG_HEART_BEAT,
+                        msg.c_str(),
+                        msg.size()))
+        {
+            std::cout << "[Send failed] MSG_HEART_BEAT\n";
+        }
+
+        if (!talker.send_msg(MSG_AUTO_FLASH_STATUS,
+                            &auto_flash,
+                            sizeof(auto_flash)))
+        {
+            std::cout << "[Send failed] MSG_AUTO_FLASH_STATUS\n";
+        }
+        
+
+
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
     }
 }
 
@@ -67,11 +88,17 @@ void com_monitor()
 int main(int argc, char* argv[])
 {
 
-    std::string ip = " 10.235.50.244";
-    std::thread com_monitor_thread(com_monitor);
+    init_socket();
+    // std::string ip = " 10.235.50.244";
+    std::string ip = "100.86.11.122";
+    std::thread com_monitor_thread(com_monitor,ip);
     com_monitor_thread.detach();
     std::string folder = "C:\\workspace\\Glymur\\r4900\\Installer";
     
+
+    int listen_port = 9000;
+    std::thread listener_thread(listener, listen_port);
+    listener_thread.detach();
 
     while (true)
     {
@@ -89,12 +116,14 @@ int main(int argc, char* argv[])
 
         std::cout << "[MAIN] Start flashing COM" << comport << "\n";
 
-        // std::thread flash_thread(
-        //     flash_worker,
-        //     folder,
-        //     comport
-        // );
-        // flash_thread.detach();
+        if(auto_flash){
+            // std::thread flash_thread(
+            //     flash_worker,
+            //     folder,
+            //     comport
+            // );
+            // flash_thread.detach();
+        }
     }
 
     
