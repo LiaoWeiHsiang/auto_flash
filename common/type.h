@@ -1,5 +1,7 @@
 #pragma once
 #include <stdint.h>
+#include <atomic>
+#include <chrono>
 
 enum MsgType {
     MSG_HEART_BEAT,
@@ -7,7 +9,9 @@ enum MsgType {
     MSG_COMPORT,
     MSG_PROGRESS,
     MSG_LOG,
-    MSG_SET_AUTO_FLASH
+    MSG_SET_AUTO_FLASH,
+    MSG_INSTALLER_PATH,
+    MSG_DOWNLOAD_PATH
 };
 
 struct Packet {
@@ -20,4 +24,14 @@ enum class FlashType {
     NONE,
     SPINOR,
     HLOS
+};
+
+struct ClientInfo {
+    std::string device_name;
+    bool heartbeat = false;
+    std::chrono::steady_clock::time_point last_seen;
+    bool server_get_auto_flash_status;
+    std::atomic<bool> auto_flash;
+    std::string installer_path;
+    std::string download_path;
 };

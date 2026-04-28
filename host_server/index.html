@@ -1,33 +1,197 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>Status Monitor</title>
-</head>
-<body>
+<meta charset="utf-8">
+<title>Status Monitor</title>
 
-<h2>Status: <span id="status">---</span></h2>
-
-<input id="input" placeholder="Send value">
-<button onclick="sendValue()">Send</button>
-
-<script>
-async function update() {
-  const r = await fetch("/status");
-  const j = await r.json();
-  document.getElementById("status").innerText = j.status;
+<style>
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 60px;
+  height: 34px;
 }
 
-async function sendValue() {
-  const v = document.getElementById("input").value;
-  await fetch("/send", {
-    method: "POST",
-    body: v
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: #ccc;
+  transition: .3s;
+  border-radius: 34px;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 26px;
+  width: 26px;
+  left: 4px;
+  bottom: 4px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: #4CAF50;
+}
+
+input:checked + .slider:before {
+  transform: translateX(26px);
+}
+</style>
+</head>
+
+<body>
+
+<h2>Clients</h2>
+<div id="client_list"></div>
+
+<script>
+
+let clientState = {};
+let initialized = false;
+
+function renderClientsOnce(clients) {
+  const container = document.getElementById("client_list");
+
+  if (initialized) return;
+  initialized = true;
+
+  clients.forEach(c => {
+    const row = document.createElement("div");
+    row.id = `row_${c.ip}`;
+    row.style.display = "flex";
+    row.style.gap = "20px";
+    row.style.margin = "10px 0";
+    row.style.alignItems = "center";
+    row.style.borderBottom = "1px solid #ddd";
+    row.style.paddingBottom = "8px";
+
+    row.innerHTML = `
+      <div style="width:140px">${c.ip}</div>
+      <div style="width:120px">${c.device}</div>
+      <div class="heartbeat" style="width:100px"></div>
+      <div class="auto" style="width:80px"></div>
+
+      <label class="switch">
+        <input type="checkbox" class="toggle-switch"
+          onchange="sendConfigToCPP('${c.ip}', this.checked)">
+        <span class="slider"></span>
+      </label>
+
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <div style="font-size:12px; color:#666;">Installer Path</div>
+        <input class="installer" style="width:220px" placeholder="Enter path..." value="">
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <div style="font-size:12px; color:#666;">Download Path</div>
+        <input class="download" style="width:220px" placeholder="Enter path..." value="">
+      </div>
+    `;
+    container.appendChild(row);
   });
 }
 
-setInterval(update, 1000);
-</script>
+async function update() {
+  try {
+    const r = await fetch("/clients");
+    const clients = await r.json();
 
+    renderClientsOnce(clients);
+
+    clients.forEach(c => {
+      clientState[c.ip] = c;
+      const row = document.getElementById(`row_${c.ip}`);
+      if (!row) return;
+
+      // 更新心跳狀態
+      const hb = row.querySelector(".heartbeat");
+      hb.innerText = c.heartbeat ? "ALIVE" : "DEAD";
+      hb.style.color = c.heartbeat ? "green" : "red";
+
+      row.querySelector(".auto").innerText = Number(c.auto_flash) ? "ON" : "OFF";
+
+      // 更新開關狀態
+      const toggle = row.querySelector(".toggle-switch");
+      toggle.checked = Number(c.auto_flash) === 1;
+
+      // --- 同步邏輯：移除「自動沿用」 ---
+      const instInput = row.querySelector(".installer");
+      const dlInput = row.querySelector(".download");
+
+      // 只有當 UI 上完全沒有值（且不是手動清空的）時才初始化一次
+      // 之後只要標記為 dirty，就絕對不再受後端 c.installer_path 影響
+      if (!instInput.dataset.dirty && !instInput.dataset.focus && instInput.value === "") {
+         if (c.installer_path) instInput.value = c.installer_path;
+      }
+      if (!dlInput.dataset.dirty && !dlInput.dataset.focus && dlInput.value === "") {
+         if (c.download_path) dlInput.value = c.download_path;
+      }
+    });
+
+  } catch (e) {
+    console.error("Fetch error:", e);
+  }
+}
+
+// 只要有過 input 事件（包括清空），就鎖定 UI，不要讓後端舊資料填回來
+document.addEventListener("input", (e) => {
+  if (e.target.tagName === "INPUT") {
+    e.target.dataset.dirty = "1";
+  }
+});
+
+document.addEventListener("focusin", (e) => {
+  if (e.target.tagName === "INPUT") e.target.dataset.focus = "1";
+});
+document.addEventListener("focusout", (e) => {
+  if (e.target.tagName === "INPUT") delete e.target.dataset.focus;
+});
+
+async function sendConfigToCPP(ip, isChecked) {
+  const row = document.getElementById(`row_${ip}`);
+  const instInput = row.querySelector(".installer");
+  const dlInput = row.querySelector(".download");
+
+  // 【核心修改】直接取目前 UI 上的值，如果是空的就傳送空字串 ""
+  // 不再使用 || c.installer_path 這種保底邏輯
+  const payload = {
+    ip: ip,
+    auto_flash: isChecked ? "1" : "0",
+    installer_path: instInput.value, 
+    download_path: dlInput.value
+  };
+
+  console.log("Sending to CPP:", payload);
+
+  try {
+    const res = await fetch("/send", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+
+    if (res.ok) {
+      // 送出成功後，我們維持 dirty=1。
+      // 這樣背景 update 就不會因為後端資料還沒更新完成，又把舊值塞回 UI
+    }
+  } catch (e) {
+    console.error("Send error:", e);
+  }
+}
+
+update();
+setInterval(update, 500);
+
+</script>
 </body>
 </html>

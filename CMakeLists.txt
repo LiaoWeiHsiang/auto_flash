@@ -95,7 +95,7 @@ endif()
 
 if(BUILD_HOST_SERVER)
     add_executable(server 
-        host_server/server.cpp
+        host_server/server_multi_plat.cpp
         utils/talker/talker.cpp
         utils/listener/listener.cpp
         utils/socket/socket.cpp
@@ -104,7 +104,14 @@ if(BUILD_HOST_SERVER)
     target_include_directories(server PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${HOST_SERVER_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/third_party/json/single_include
     )
 
-    target_link_libraries(server pthread)
+    # target_link_libraries(server pthread)
+    # target_link_libraries(server ws2_32)
+    if (WIN32)
+        target_link_libraries(server ws2_32)
+    else()
+        target_link_libraries(server pthread)
+    endif()
 endif()

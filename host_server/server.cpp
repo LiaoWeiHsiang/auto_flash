@@ -10,10 +10,14 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <nlohmann/json.hpp>
 
 #include "utils/talker/talker.h"
 #include "utils/listener/listener.h"
 #include "httplib.h"
+
+using json = nlohmann::json;
+bool client_heart_beat = false;
 
 std::string get_exe_dir()
 {
@@ -39,60 +43,17 @@ std::string read_file(const std::string& path)
 
 
 // ===== Global status =====
-std::atomic<bool> g_status{false};
-bool auto_flash_status{false};
-bool auto_flash = false;
+
 // ===== CONFIG =====
 constexpr int HTTP_PORT = 8080;
 
-// // 另一台 server（你已有的 C++ socket listener）
-// constexpr const char* REMOTE_SERVER_IP = "192.168.1.100";
-// constexpr int REMOTE_SERVER_PORT = 9000;
 
-// // 本地 socket listener（收 status）
-// constexpr int LOCAL_LISTEN_PORT = 9001;
-
-// // ===== Socket: receive status =====
-// void status_listener()
-// {
-//     int sock = socket(AF_INET, SOCK_STREAM, 0);
-
-//     sockaddr_in addr{};
-//     addr.sin_family = AF_INET;
-//     addr.sin_port = htons(LOCAL_LISTEN_PORT);
-//     addr.sin_addr.s_addr = INADDR_ANY;
-
-//     bind(sock, (sockaddr*)&addr, sizeof(addr));
-//     listen(sock, 5);
-
-//     std::cout << "[STATUS] Listening on port " << LOCAL_LISTEN_PORT << "\n";
-
-//     while (true)
-//     {
-//         int client = accept(sock, nullptr, nullptr);
-//         if (client < 0) continue;
-
-//         char buf[64] = {};
-//         int n = read(client, buf, sizeof(buf));
-
-//         if (n > 0)
-//         {
-//             std::string msg(buf);
-//             if (msg.find("1") != std::string::npos)
-//                 g_status.store(true);
-//             else
-//                 g_status.store(false);
-
-//             std::cout << "[STATUS] Update: " << g_status.load() << "\n";
-//         }
-
-//         close(client);
-//     }
 // }
-void set_auto_flash(const std::string& msg, const std::string& ip)
+void set_auto_flash(const std::string& auto_flash,const std::string& installer_path, const std::string& download_path, const std::string& ip)
 {
+    // std::string tmp_string;
     std::cout << "Send message from server" << std::endl;
-    int value = std::stoi(msg);
+    int value = std::stoi(auto_flash);
     Talker talker(ip, 9000);
     if (!talker.send_msg(MSG_SET_AUTO_FLASH,
                         &value,
@@ -100,38 +61,99 @@ void set_auto_flash(const std::string& msg, const std::string& ip)
     {
         std::cout << "[Send failed] MSG_SET_AUTO_FLASH\n";
     }
+
+    // tmp_string = installer_path
+    if (!talker.send_msg(MSG_INSTALLER_PATH,
+                        installer_path.c_str(),
+                        installer_path.size()))
+    {
+        std::cout << "[Send failed] MSG_INSTALLER_PATH\n";
+    }
+
+    // tmp_string = installer_path
+    if (!talker.send_msg(MSG_DOWNLOAD_PATH,
+                        download_path.c_str(),
+                        download_path.size()))
+    {
+        std::cout << "[Send failed] MSG_DOWNLOAD_PATH\n";
+    }
+
 }
 
+class StatusProcessor {
+public:
+    StatusProcessor(Listener* listener_)
+        : running_(false), listener(listener_) {}
+
+    void start() {
+        running_ = true;
+        thread_ = std::thread(&StatusProcessor::processLoop, this);
+    }
+
+    void stop() {
+        running_ = false;
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    ~StatusProcessor() {
+        stop();
+    }
+
+private:
+    void processLoop() {
+        using namespace std::chrono;
+
+        steady_clock::time_point last_change_time = steady_clock::now();
+
+        while (running_) {
 
 
-// ===== Socket: send input =====
-// void send_to_remote(const std::string& msg)
-// {
-//     int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (listener->heart_beat_count > last_heart_beat_count) {
+                client_heart_beat = true;
+                last_change_time = steady_clock::now();
+            } else {
+                auto now = steady_clock::now();
+                auto diff = duration_cast<seconds>(now - last_change_time).count();
 
-//     sockaddr_in remote{};
-//     remote.sin_family = AF_INET;
-//     remote.sin_port = htons(REMOTE_SERVER_PORT);
-//     inet_pton(AF_INET, REMOTE_SERVER_IP, &remote.sin_addr);
+                if (diff >= 1) {
+                    client_heart_beat = false;
+                }
+            }
 
-//     if (connect(sock, (sockaddr*)&remote, sizeof(remote)) == 0)
-//     {
-//         send(sock, msg.c_str(), msg.size(), 0);
-//         std::cout << "[SEND] " << msg << "\n";
-//     }
+            last_heart_beat_count = listener->heart_beat_count;
 
-//     close(sock);
-// }
+            std::this_thread::sleep_for(milliseconds(100));
+        }
 
-// bool global_status = false;
+        std::cout << "status_process_thread stopped" << std::endl;
+    }
+
+private:
+    std::thread thread_;
+    std::atomic<bool> running_;
+
+    Listener* listener;   // ✔ 正確存 pointer
+
+    int last_heart_beat_count = 0;
+};
+
+
+
 
 int main()
 {
     // ===== Start socket listener thread =====
-    // std::thread(status_listener).detach();
     int listen_port = 9000;
-    std::thread listener_thread(listener, listen_port);
-    listener_thread.detach();
+    Listener listener(listen_port);
+    listener.start();
+    
+
+    StatusProcessor sp(&listener);
+
+    sp.start();
+
 
     std::string ip = "100.83.43.17";
     // ===== HTTP Server =====
@@ -149,25 +171,73 @@ int main()
 
 
     // Status API
-    svr.Get("/status", [](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/status", [&listener](const httplib::Request&, httplib::Response& res) {
         std::string json = std::string("{\"status\": ")
-            + (auto_flash_status ? "true" : "false")
+            + (listener.server_get_auto_flash_status() ? "true" : "false")
             + "}";
+
+        res.set_content(json, "application/json");
+    });
+
+    svr.Get("/client_status", [](const httplib::Request&, httplib::Response& res) {
+        std::string json = std::string("{\"client\": ")
+            + (client_heart_beat ? "true" : "false")
+            + "}";
+
         res.set_content(json, "application/json");
     });
 
     // Send API
-    // svr.Post("/send", [](const httplib::Request& req, httplib::Response& res) {
-    //     // send_to_remote(req.body);
+    // svr.Post("/send", [ip](const httplib::Request& req, httplib::Response& res) {
     //     set_auto_flash(req.body, ip);
     //     res.set_content("OK", "text/plain");
     // });
 
-    svr.Post("/send", [ip](const httplib::Request& req, httplib::Response& res) {
-        set_auto_flash(req.body, ip);
+    svr.Post("/send", [&](const httplib::Request& req, httplib::Response& res) {
+
+        std::cout << "==== /send HIT ====\n";
+        std::cout << "body: " << req.body << "\n";
+
+        try {
+            auto j = json::parse(req.body);
+
+            std::cout << "PARSE OK\n";
+
+            std::string auto_flash = j.value("auto_flash", "");
+            std::cout << "auto_flash: " << auto_flash << "\n";
+            std::string installer_path = j.value("installer_path", "");
+            std::cout << "installer: " << installer_path << "\n";
+            std::string download_path = j.value("download_path", "");
+
+            
+            
+            std::cout << "download: " << download_path << "\n";
+
+            set_auto_flash(auto_flash, installer_path,download_path , ip);
+
+        } catch (const std::exception& e) {
+            std::cout << "[JSON PARSE ERROR] " << e.what() << "\n";
+        }
+
+        // json j = json::parse(req.body);
+
+        // std::cout << "body: " << req.body << "\n";
+
+        // bool auto_flash = j["auto_flash"];
+        // std::string installer_path = j["installer_path"];
+        // std::string download_path = j["download_path"];
+
+        // std::cout << "auto_flash: " << auto_flash << "\n";
+        // std::cout << "installer: " << installer_path << "\n";
+        // std::cout << "download: " << download_path << "\n";
+
+        // set_auto_flash(auto_flash, ip);
+
         res.set_content("OK", "text/plain");
     });
 
     // std::cout << "[HTTP] Server running on port " << HTTP_PORT << "\n";
     svr.listen("0.0.0.0", HTTP_PORT);
+    listener.stop(); 
+    sp.stop();
 }

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Status Monitor</title>
+
+<style>
+/* switch 外框 */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 60px;
+  height: 34px;
+}
+
+/* 隱藏原本 checkbox */
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+/* 滑動條 */
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: .3s;
+  border-radius: 34px;
+}
+
+/* 圓形按鈕 */
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 26px;
+  width: 26px;
+  left: 4px;
+  bottom: 4px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+}
+
+/* 開啟狀態 */
+input:checked + .slider {
+  background-color: #4CAF50;
+}
+
+input:checked + .slider:before {
+  transform: translateX(26px);
+}
+
+.status-green {
+  color: #00c853;
+  text-shadow: 0 0 6px rgba(0,255,0,0.4);
+}
+
+.status-red {
+  color: #ff1744;
+  text-shadow: 0 0 6px rgba(255,0,0,0.4);
+}
+</style>
+
+</head>
+<body>
+
+<!-- <h2>Client Status: <span id="client_status">---</span></h2>
+<h2>Auto Flash Status: <span id="status">---</span></h2> -->
+
+<div style="display:flex; gap:40px; align-items:center;">
+
+  <h2 style="margin:0;">
+    Client Status: <span id="client_status">---</span>
+  </h2>
+
+  <h2 style="margin:0; display:flex; align-items:center; gap:10px;">
+    Auto Flash Status: 
+    <span id="status">---</span>
+
+    <label class="switch" style="margin-left:10px;">
+      <input type="checkbox" id="toggle" onchange="toggleChanged()">
+      <span class="slider"></span>
+    </label>
+  </h2>
+
+</div>
+
+<br><br>
+
+<div>
+  <div>
+    Installer Path:
+    <input type="text" id="installer_path" style="width:300px;">
+  </div>
+
+  <div>
+    Download Path:
+    <input type="text" id="download_path" style="width:300px;">
+  </div>
+</div>
+
+<script>
+async function update() {
+  const r = await fetch("/status");
+  const j = await r.json();
+  const status = j.status;
+
+  const statusEl = document.getElementById("status");
+  statusEl.innerText = status ? "ON" : "OFF";
+  statusEl.className = status ? "status-green" : "status-red";
+
+  document.getElementById("toggle").checked = status;
+
+  const r2 = await fetch("/client_status");
+  const j2 = await r2.json();
+  const client = j2.client;
+
+  const clientEl = document.getElementById("client_status");
+  clientEl.innerText = client ? "ALIVE" : "DEAD";
+  clientEl.className = client ? "status-green" : "status-red";
+}
+
+async function toggleChanged() {
+  const checked = document.getElementById("toggle").checked;
+
+  const installer = document.getElementById("installer_path").value;
+  const download = document.getElementById("download_path").value;
+
+  const payload = {
+    auto_flash: checked ? "1" : "0",
+    installer_path: installer,
+    download_path: download
+  };
+
+  await fetch("/send", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+// 每秒更新
+setInterval(update, 500);
+</script>
+
+</body>
+</html>

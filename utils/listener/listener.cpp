@@ -1,323 +1,94 @@
-// #include "listener/listener.h"
-// // ======================
-// // Server (listener)
-// // ======================
-
-// // void listener(int port)
-// // {
-// //     socket_t server_fd, client_fd;
-// //     struct sockaddr_in addr;
-// //     char buffer[BUFFER_SIZE];
-
-// //     struct sockaddr_in client_addr;
-// //     socklen_t client_addr_len = sizeof(client_addr);
-
-
-// //     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-// //     if (server_fd < 0) {
-// //         perror("socket");
-// //         return;
-// //     }
-
-// //     int opt = 1;
-// //     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
-// //                 (char*)&opt, sizeof(opt)) < 0) {
-// //         perror("setsockopt");
-// //         close_socket(server_fd);
-// //         return;
-// //     }
-
-// //     addr.sin_family = AF_INET;
-// //     addr.sin_addr.s_addr = INADDR_ANY;
-// //     addr.sin_port = htons(port);
-
-// //     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-// //         perror("bind");
-// //         close_socket(server_fd);
-// //         return;
-// //     }
-
-// //     if (listen(server_fd, 5) < 0) {
-// //         perror("listen");
-// //         return;
-// //     }
-
-// //     std::cout << "[Listener] Listening on port " << port << std::endl;
-
-// //     while (true) {
-// //         client_fd = accept(server_fd,
-// //                         (struct sockaddr*)&client_addr,
-// //                         &client_addr_len);
-
-// //         if (client_fd < 0) {
-// //             perror("accept");
-// //             continue;
-// //         }
-
-// //         // timeout 應該設在 client_fd
-// //         struct timeval tv;
-// //         tv.tv_sec = 5;
-// //         tv.tv_usec = 0;
-
-// //         if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-// //             (const char*)&tv, sizeof(tv)) < 0) {
-// //             perror("setsockopt");
-// //         }
-// //         char ip[INET_ADDRSTRLEN];
-// //         inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-
-// //         int client_port = ntohs(client_addr.sin_port);
-
-// //         memset(buffer, 0, BUFFER_SIZE);
-
-// //     #ifdef _WIN32
-// //         int n = recv(client_fd, buffer, BUFFER_SIZE, 0);
-// //     #else
-// //         int n = read(client_fd, buffer, BUFFER_SIZE);
-// //     #endif
-
-
-    
-// //         if (n > 0) {
-// //             std::cout << "[Received] " << buffer << std::endl;
-// //             std::cout << "Client IP: " << ip
-// //                     << " Port: " << client_port << std::endl;
-// //         }
-
-// //         close_socket(client_fd);
-// //     }
-// // }
-
-
-// void listener(int port)
-// {
-//     socket_t server_fd, client_fd;
-//     struct sockaddr_in addr;
-//     struct sockaddr_in client_addr;
-//     socklen_t client_addr_len = sizeof(client_addr);
-
-//     char ip[INET_ADDRSTRLEN];
-
-//     // ===== create socket =====
-//     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-//     if (server_fd < 0) {
-//         perror("socket");
-//         return;
-//     }
-
-//     int opt = 1;
-//     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
-//                 (const char*)&opt, sizeof(opt));
-
-//     // ===== bind =====
-//     addr.sin_family = AF_INET;
-//     addr.sin_addr.s_addr = INADDR_ANY;
-//     addr.sin_port = htons(port);
-
-//     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-//         perror("bind");
-//         close_socket(server_fd);
-//         return;
-//     }
-
-//     // ===== listen =====
-//     if (listen(server_fd, 5) < 0) {
-//         perror("listen");
-//         close_socket(server_fd);
-//         return;
-//     }
-
-//     std::cout << "[Listener] Listening on port " << port << std::endl;
-
-//     // ==============================
-//     // TLV header
-//     // ==============================
-// #pragma pack(push, 1)
-//     struct PacketHeader {
-//         uint8_t type;
-//         uint32_t length;
-//     };
-// #pragma pack(pop)
-
-//     while (true)
-//     {
-//         client_fd = accept(server_fd,
-//                            (struct sockaddr*)&client_addr,
-//                            &client_addr_len);
-
-//         if (client_fd < 0) {
-//             perror("accept");
-//             continue;
-//         }
-
-//         inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-//         int client_port = ntohs(client_addr.sin_port);
-
-//         std::cout << "[Client Connected] "
-//                   << ip << ":" << client_port << std::endl;
-
-//         // ===== timeout =====
-//         struct timeval tv;
-//         tv.tv_sec = 5;
-//         tv.tv_usec = 0;
-
-//         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-//                    (const char*)&tv, sizeof(tv));
-
-//         // ==============================
-//         // 1. read header
-//         // ==============================
-//         // PacketHeader header;
-
-//         // int n = recv(client_fd, (char*)&header, sizeof(header), 0);
-//         // if (n <= 0) {
-//         //     close_socket(client_fd);
-//         //     continue;
-//         // }
-
-//         // ==============================
-//         // 2. read payload (handle partial recv)
-//         // ==============================
-//         // char* data = new char[header.length];
-//         // uint32_t received = 0;
-
-//         // while (received < header.length)
-//         // {
-//         //     int r = recv(client_fd,
-//         //                  data + received,
-//         //                  header.length - received,
-//         //                  0);
-
-//         //     if (r <= 0) {
-//         //         delete[] data;
-//         //         close_socket(client_fd);
-//         //         goto next_client;
-//         //     }
-
-//         //     received += r;
-//         // }
-
-//         // while (received < sizeof(header)) {
-//         //     int r = recv(client_fd,
-//         //                 ((char*)&header) + received,
-//         //                 sizeof(header) - received,
-//         //                 0);
-//         //     if(r>0){
-//         //         printf("r = %d\n", r);
-//         //     }
-//         //     if (r <= 0) {
-//         //         close_socket(client_fd);
-//         //         continue;
-//         //     }
-
-//         //     received += r;
-//         // }
-
-//         PacketHeader header;
-//         uint32_t received = 0;
-
-//         char* data; // = new char[header.length];
-        
-
-//         while (received < sizeof(header)) {
-//             int r = recv(client_fd,
-//                         ((char*)&header) + received,
-//                         sizeof(header) - received,
-//                         0);
-
-//             if (r <= 0) {
-//                 close_socket(client_fd);
-//                 goto next_client;
-//             }
-
-//             received += r;
-//         }
-
-//         received = 0;
-//         if (header.length == 0 || header.length > 10 * 1024 * 1024) {
-//             std::cout << "Invalid length: " << header.length << std::endl;
-//             close_socket(client_fd);
-//             goto next_client;
-//         }
-//         data = new char[header.length];
-
-//         while (received < header.length)
-//         {
-//             int r = recv(client_fd,
-//                         data + received,
-//                         header.length - received,
-//                         0);
-
-//             if (r <= 0) {
-//                 delete[] data;
-//                 close_socket(client_fd);
-//                 goto next_client;
-//             }
-
-//             received += r;
-//         }
-
-//         // ==============================
-//         // 3. dispatch
-//         // ==============================
-//         switch (header.type)
-//         {
-//             case MSG_COMPORT:
-//             {
-//                 int port;
-//                 memcpy(&port, data, sizeof(int));
-//                 std::cout << "[COMPORT] " << port << std::endl;
-//                 break;
-//             }
-
-//             case MSG_PROGRESS:
-//             {
-//                 int progress;
-//                 memcpy(&progress, data, sizeof(int));
-//                 std::cout << "[PROGRESS] " << progress << std::endl;
-//                 break;
-//             }
-
-//             case MSG_LOG:
-//             {
-//                 std::string log(data, header.length);
-//                 std::cout << "[LOG] " << log << std::endl;
-//                 break;
-//             }
-
-//             default:
-//                 std::cout << "[UNKNOWN TYPE] " << (int)header.type << std::endl;
-//                 break;
-//         }
-
-//         delete[] data;
-//         close_socket(client_fd);
-
-//     next_client:
-//         continue;
-//     }
-// }
-
-
-
 #include "utils/listener/listener.h"
-#include <vector>
-#include <iostream>
-#include <cstring>
-#include <atomic>
 
 // ======================
-// helper: recv all
+// constructor
 // ======================
-static bool recv_all(socket_t fd, void* buf, size_t len)
+Listener::Listener(int port)
+    : port_(port),
+      server_get_auto_flash_status_(false),
+      auto_flash_(false),
+      running_(false)
+{}
+
+// ======================
+// start / stop
+// ======================
+void Listener::start()
+{
+    if (running_) return;
+
+    running_ = true;
+    worker_ = std::thread(&Listener::run, this);
+}
+
+void Listener::stop()
+{
+    running_ = false;
+
+    if (worker_.joinable())
+        worker_.join();
+}
+
+// ======================
+// getters
+// ======================
+bool Listener::auto_flash() const
+{
+    return auto_flash_;
+}
+
+bool Listener::server_get_auto_flash_status() const
+{
+    return server_get_auto_flash_status_;
+}
+
+static void print_socket_error()
+{
+#ifdef _WIN32
+    int err = WSAGetLastError();
+    std::cout << "[socket error] WSA = " << err << std::endl;
+#else
+    std::cout << "[socket error] errno = " << errno
+              << " (" << strerror(errno) << ")" << std::endl;
+#endif
+}
+// ======================
+// recv_all helper
+// ======================
+bool Listener::recv_all(socket_t fd, void* buf, size_t len)
 {
     size_t received = 0;
 
     while (received < len)
     {
+
         int r = recv(fd, (char*)buf + received, len - received, 0);
-        if (r <= 0)
+        if (r == 0)
+        {
+            std::cout << "[Client disconnected]\n";
             return false;
+        }
+
+        if (r < 0)
+        {
+            print_socket_error();
+        #ifdef _WIN32v
+            int err = WSAGetLastError();
+            if (err == WSAETIMEDOUT)
+                return true;   // timeout → 不要斷
+        #else
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return true;   // timeout → 不要斷
+        #endif
+
+            return false;
+        }
+
+        // int r = recv(fd, (char*)buf + received, len - receied, 0);
+        // printf("r = %d\n", r);
+        // if (r <= 0)
+        //     print_socket_error();
+        //     return false;
 
         received += r;
     }
@@ -326,158 +97,9 @@ static bool recv_all(socket_t fd, void* buf, size_t len)
 }
 
 // ======================
-// Server (listener)
+// main thread loop
 // ======================
-// void listener(int port)
-// {
-//     socket_t server_fd, client_fd;
-//     struct sockaddr_in addr;
-//     struct sockaddr_in client_addr;
-//     socklen_t client_addr_len = sizeof(client_addr);
-
-//     char ip[INET_ADDRSTRLEN];
-
-//     // ===== create socket =====
-//     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-//     if (server_fd < 0) {
-//         perror("socket");
-//         return;
-//     }
-
-//     int opt = 1;
-//     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
-//                (const char*)&opt, sizeof(opt));
-
-//     // ===== bind =====
-//     addr.sin_family = AF_INET;
-//     addr.sin_addr.s_addr = INADDR_ANY;
-//     addr.sin_port = htons(port);
-
-//     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-//         perror("bind");
-//         close_socket(server_fd);
-//         return;
-//     }
-
-//     // ===== listen =====
-//     if (listen(server_fd, 5) < 0) {
-//         perror("listen");
-//         close_socket(server_fd);
-//         return;
-//     }
-
-//     std::cout << "[Listener] Listening on port " << port << std::endl;
-
-// #pragma pack(push, 1)
-//     struct PacketHeader {
-//         uint8_t type;
-//         uint32_t length; // network order
-//     };
-// #pragma pack(pop)
-
-//     while (true)
-//     {
-//         client_fd = accept(server_fd,
-//                            (struct sockaddr*)&client_addr,
-//                            &client_addr_len);
-
-//         if (client_fd < 0) {
-//             perror("accept");
-//             continue;
-//         }
-
-//         inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-//         int client_port = ntohs(client_addr.sin_port);
-
-//         std::cout << "[Client Connected] "
-//                   << ip << ":" << client_port << std::endl;
-
-//         // ===== timeout =====
-//         struct timeval tv;
-//         tv.tv_sec = 5;
-//         tv.tv_usec = 0;
-
-//         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-//                    (const char*)&tv, sizeof(tv));
-
-//         // ==============================
-//         // 1. recv header
-//         // ==============================
-//         PacketHeader header;
-
-//         if (!recv_all(client_fd, &header, sizeof(header))) {
-//             close_socket(client_fd);
-//             continue;
-//         }
-
-//         // endian convert
-//         header.length = ntohl(header.length);
-
-//         // ==============================
-//         // 2. validate length
-//         // ==============================
-//         if (header.length == 0 || header.length > 10 * 1024 * 1024) {
-//             std::cout << "[ERROR] Invalid length: "
-//                       << header.length << std::endl;
-//             close_socket(client_fd);
-//             continue;
-//         }
-
-//         // ==============================
-//         // 3. recv payload
-//         // ==============================
-//         std::vector<char> data(header.length);
-
-//         if (!recv_all(client_fd, data.data(), header.length)) {
-//             close_socket(client_fd);
-//             continue;
-//         }
-
-//         // ==============================
-//         // 4. dispatch
-//         // ==============================
-//         switch (header.type)
-//         {
-//             case MSG_COMPORT:
-//             {
-//                 if (header.length < sizeof(int)) break;
-
-//                 int port;
-//                 memcpy(&port, data.data(), sizeof(int));
-//                 std::cout << "[COMPORT] " << port << std::endl;
-//                 break;
-//             }
-
-//             case MSG_PROGRESS:
-//             {
-//                 if (header.length < sizeof(int)) break;
-
-//                 int progress;
-//                 memcpy(&progress, data.data(), sizeof(int));
-//                 std::cout << "[PROGRESS] " << progress << std::endl;
-//                 break;
-//             }
-
-//             case MSG_LOG:
-//             {
-//                 std::string log(data.begin(), data.end());
-//                 std::cout << "[LOG] " << log << std::endl;
-//                 break;
-//             }
-
-//             default:
-//                 std::cout << "[UNKNOWN TYPE] "
-//                           << (int)header.type << std::endl;
-//                 break;
-//         }
-
-//         close_socket(client_fd);
-//     }
-// }
-// extern std::atomic<bool> g_status;
-extern bool auto_flash_status;
-extern bool auto_flash;
-void listener(int port)
+void Listener::run()
 {
     socket_t server_fd, client_fd;
     struct sockaddr_in addr;
@@ -498,7 +120,7 @@ void listener(int port)
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(port_);
 
     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind");
@@ -512,25 +134,23 @@ void listener(int port)
         return;
     }
 
-    std::cout << "[Listener] Listening on port " << port << std::endl;
+    std::cout << "[Listener] Listening on port " << port_ << std::endl;
+    fflush(stdout);
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
 
-#pragma pack(push, 1)
-    struct PacketHeader {
-        uint8_t type;
-        uint32_t length; // network order
-    };
-#pragma pack(pop)
+    setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO,
+               (const char*)&tv, sizeof(tv));
 
-    while (true)
+    while (running_)
     {
         client_fd = accept(server_fd,
                            (struct sockaddr*)&client_addr,
                            &client_addr_len);
 
-        if (client_fd < 0) {
-            perror("accept");
+        if (client_fd < 0)
             continue;
-        }
 
         inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
         int client_port = ntohs(client_addr.sin_port);
@@ -538,125 +158,172 @@ void listener(int port)
         std::cout << "[Client Connected] "
                   << ip << ":" << client_port << std::endl;
 
-        // timeout（可保留）
-        struct timeval tv;
-        tv.tv_sec = 30;
-        tv.tv_usec = 0;
+        // handle_client(client_fd);
+        std::thread(&Listener::handle_client, this, client_fd, std::string(ip)).detach();
 
-        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-                   (const char*)&tv, sizeof(tv));
+        // close_socket(client_fd);
+    }
 
-        while (true)
-        {
-            PacketHeader header;
+    close_socket(server_fd);
+}
 
-            // 1. read header
-            if (!recv_all(client_fd, &header, sizeof(header))) {
-                std::cout << "[Client disconnected]\n";
-                break;
-            }
+// ======================
+// client handler
+// ======================
+void Listener::handle_client(socket_t client_fd, std::string ip)
+{
+    struct timeval tv;
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
 
-            header.length = ntohl(header.length);
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
+               (const char*)&tv, sizeof(tv));
 
-            if (header.length == 0 || header.length > 10 * 1024 * 1024) {
-                std::cout << "[ERROR] Invalid length\n";
-                break;
-            }
+    while (true)
+    {
+        PacketHeader header;
 
-            // 2. read payload
-            std::vector<char> data(header.length);
-
-            if (!recv_all(client_fd, data.data(), header.length)) {
-                std::cout << "[Client disconnected during payload]\n";
-                break;
-            }
-
-            // 3. dispatch
-            switch (header.type)
-            {
-                case MSG_HEART_BEAT:
-                {
-                    std::string log(data.begin(), data.end());
-                    // std::cout << "[MSG_HEART_BEAT] " << log << std::endl;
-                    fflush(stdout);
-                    break;
-                    // if (header.length >= sizeof(int)) {
-                    //     int port;
-                    //     memcpy(&port, data.data(), sizeof(int));
-                    //     std::cout << "[COMPORT] " << port << std::endl;
-                    //     std::cout.flush();
-                    // }
-                    // g_status = true;
-                    // std::cout << "[MSG_HEART_BEAT] " <<  << std::endl;
-                    break;
-                }
-                
-                case MSG_AUTO_FLASH_STATUS:
-                {
-                    if (header.length >= sizeof(bool)) {
-                        // int port;
-                        memcpy(&auto_flash_status, data.data(), sizeof(bool));
-                        // std::cout << "[MSG_AUTO_FLASH_STATUS] " << auto_flash_status << std::endl;
-                        std::cout.flush();
-                    }
-                    break;
-                }
-
-                
-                case MSG_COMPORT:
-                {
-                    if (header.length >= sizeof(int)) {
-                        int port;
-                        memcpy(&port, data.data(), sizeof(int));
-                        std::cout << "[COMPORT] " << port << std::endl;
-                        std::cout.flush();
-                    }
-                    break;
-                }
-
-                case MSG_PROGRESS:
-                {
-                    if (header.length >= sizeof(int)) {
-                        int progress;
-                        memcpy(&progress, data.data(), sizeof(int));
-                        std::cout << "[PROGRESS] " << progress << std::endl;
-                        fflush(stdout);
-                    }
-                    break;
-                }
-
-                case MSG_LOG:
-                {
-                    std::string log(data.begin(), data.end());
-                    std::cout << "[LOG] " << log << std::endl;
-                    fflush(stdout);
-                    break;
-                }
-                
-                case MSG_SET_AUTO_FLASH:
-                {
-                     if (header.length >= sizeof(int)) {
-                        // int port;
-                        // memcpy(&auto_flash, data.data(), sizeof(int));
-                        // std::cout.flush();
-                        int value = 0;
-                        memcpy(&value, data.data(), sizeof(int));
-                        auto_flash = (value != 0);
-
-                        std::cout << "[MSG_SET_AUTO_FLASH] " << auto_flash << std::endl;
-                        
-                    }
-                    break;
-                }
-                
-
-                default:
-                    std::cout << "[UNKNOWN TYPE] "
-                              << (int)header.type << std::endl;
-                    break;
-            }
+        // recv_all(client_fd, &header, sizeof(header));
+        if (!recv_all(client_fd, &header, sizeof(header))) {
+            std::cout << "[Client disconnected]\n";
+            break;
         }
 
-        close_socket(client_fd);
+        header.length = ntohl(header.length);
+
+        if (header.length == 0 || header.length > 10 * 1024 * 1024) {
+            std::cout << "[ERROR] Invalid length\n";
+            break;
+        }
+
+        std::vector<char> data(header.length);
+
+        // recv_all(client_fd, data.data(), header.length);
+
+        if (!recv_all(client_fd, data.data(), header.length)) {
+            std::cout << "[Client disconnected during payload]\n";
+            break;
+        }
+
+        dispatch(header.type, header.length, data, ip);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+// ======================
+// dispatch
+// ======================
+void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& data, std::string ip)
+{
+    switch (type)
+    {
+        case MSG_HEART_BEAT:
+        {
+            std::string device_name(data.begin(), data.end());
+
+            std::lock_guard<std::mutex> lock(clients_mutex);
+
+            auto& c = clients_map[ip];  // auto-create if not exist
+
+            c.device_name = device_name;
+            c.heartbeat = true;
+            c.last_seen = std::chrono::steady_clock::now();
+
+            if (std::find(client_ip_list.begin(), client_ip_list.end(), ip)
+                == client_ip_list.end())
+            {
+                client_ip_list.push_back(ip);
+            }
+
+            // std::cout << "[HEARTBEAT] " << ip << " => " << device_name << "\n";
+            break;
+        }
+
+        case MSG_AUTO_FLASH_STATUS:
+        {
+            if (length >= sizeof(bool)) {
+                bool value;
+                memcpy(&value, data.data(), sizeof(bool));
+                auto& c = clients_map[ip];  // auto-create if not exist
+                c.server_get_auto_flash_status = value;
+                server_get_auto_flash_status_ = value;
+                std::cout.flush();
+            }
+            break;
+        }
+
+        case MSG_COMPORT:
+        {
+            if (length >= sizeof(int)) {
+                int port;
+                memcpy(&port, data.data(), sizeof(int));
+
+                std::cout << "[COMPORT] " << port << std::endl;
+                std::cout.flush();
+            }
+            break;
+        }
+
+        case MSG_PROGRESS:
+        {
+            if (length >= sizeof(int)) {
+                int progress;
+                memcpy(&progress, data.data(), sizeof(int));
+
+                std::cout << "[PROGRESS] " << progress << std::endl;
+                fflush(stdout);
+            }
+            break;
+        }
+
+        case MSG_LOG:
+        {
+            std::string log(data.begin(), data.end());
+            std::cout << "[LOG] " << log << std::endl;
+            fflush(stdout);
+            break;
+        }
+
+        case MSG_SET_AUTO_FLASH:
+        {
+            if (length >= sizeof(int)) {
+                int value = 0;
+                memcpy(&value, data.data(), sizeof(int));
+
+                auto_flash_ = (value != 0);
+                auto& c = clients_map[ip];  // auto-create if not exist
+                c.auto_flash = (value != 0);
+                std::cout << "[MSG_SET_AUTO_FLASH] "
+                          << auto_flash_ << std::endl;
+            }
+            break;
+        }
+
+        case MSG_INSTALLER_PATH:
+        {
+            std::string installer_path_(data.begin(), data.end());
+            installer_path = installer_path_;
+            auto& c = clients_map[ip];  // auto-create if not exist
+            c.installer_path = installer_path_;
+            std::cout << "[MSG_INSTALLER_PATH] " << installer_path << std::endl;
+            fflush(stdout);
+            break;
+        }
+
+        case MSG_DOWNLOAD_PATH:
+        {
+            std::string download_path_(data.begin(), data.end());
+            download_path = download_path_;
+            auto& c = clients_map[ip];  // auto-create if not exist
+            c.download_path = download_path_;
+            std::cout << "[MSG_DOWNLOAD_PATH] " << download_path << std::endl;
+            fflush(stdout);
+            break;
+        }
+
+        default:
+            std::cout << "[UNKNOWN TYPE] "
+                      << (int)type << std::endl;
+            break;
     }
 }

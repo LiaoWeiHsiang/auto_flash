@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Status Monitor</title>
+
+<style>
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 60px;
+  height: 34px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: #ccc;
+  transition: .3s;
+  border-radius: 34px;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 26px;
+  width: 26px;
+  left: 4px;
+  bottom: 4px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: #4CAF50;
+}
+
+input:checked + .slider:before {
+  transform: translateX(26px);
+}
+</style>
+</head>
+
+<body>
+
+<h2>Clients</h2>
+<div id="client_list"></div>
+
+<script>
+
+let clientState = {};
+
+async function update() {
+  try {
+    const r = await fetch("/clients");
+    const clients = await r.json();
+
+    const container = document.getElementById("client_list");
+    container.innerHTML = "";
+
+    clientState = {};
+
+    clients.forEach(c => {
+
+      clientState[c.ip] = c;
+
+      const autoFlash = Number(c.auto_flash) === 1;
+      const heartbeat = Number(c.heartbeat) === 1;
+
+      const row = document.createElement("div");
+
+      row.style.display = "flex";
+      row.style.gap = "20px";
+      row.style.margin = "10px 0";
+      row.style.alignItems = "center";
+      row.style.borderBottom = "1px solid #ddd";
+      row.style.paddingBottom = "8px";
+
+      row.innerHTML = `
+        <div style="width:140px">${c.ip}</div>
+        <div style="width:120px">${c.device}</div>
+
+        <div style="width:100px; color:${heartbeat ? 'green':'red'}">
+          ${heartbeat ? "ALIVE" : "DEAD"}
+        </div>
+
+        <div style="width:80px">
+          ${autoFlash ? "ON" : "OFF"}
+        </div>
+
+        <label class="switch">
+          <input type="checkbox" ${autoFlash ? "checked" : ""}
+            onchange="toggleClient('${c.ip}', this.checked)">
+          <span class="slider"></span>
+        </label>
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:12px; color:#666;">Installer Path</div>
+          <input style="width:220px"
+            value="${c.installer_path || ''}"
+            onchange="updateField('${c.ip}', 'installer', this.value)">
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div style="font-size:12px; color:#666;">Download Path</div>
+          <input style="width:220px"
+            value="${c.download_path || ''}"
+            onchange="updateField('${c.ip}', 'download', this.value)">
+        </div>
+      `;
+
+      container.appendChild(row);
+    });
+
+  } catch (e) {
+    console.error("update error:", e);
+  }
+}
+
+async function toggleClient(ip, checked) {
+
+  const c = clientState[ip] || {};
+
+  const payload = {
+    ip: ip,
+    auto_flash: checked ? "1" : "0",
+    installer_path: c.installer_path || "",
+    download_path: c.download_path || ""
+  };
+
+  await fetch("/send", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+}
+
+async function updateField(ip, type, value) {
+
+  const payload = {
+    ip: ip,
+    installer_path: type === "installer" ? value : "",
+    download_path: type === "download" ? value : ""
+  };
+
+  await fetch("/send", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+}
+
+update();
+setInterval(update, 500);
+
+</script>
+
+</body>
+</html>
