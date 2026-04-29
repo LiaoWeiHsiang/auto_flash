@@ -55,46 +55,49 @@ static void print_socket_error()
 // ======================
 // recv_all helper
 // ======================
+
 bool Listener::recv_all(socket_t fd, void* buf, size_t len)
 {
     size_t received = 0;
 
     while (received < len)
     {
-
         int r = recv(fd, (char*)buf + received, len - received, 0);
+
         if (r == 0)
         {
-            std::cout << "[Client disconnected]\n";
+            // Peer closed connection
+            std::cout << "[Client closed connection]\n";
             return false;
         }
 
         if (r < 0)
         {
-            print_socket_error();
-        #ifdef _WIN32v
+#ifdef _WIN32
             int err = WSAGetLastError();
             if (err == WSAETIMEDOUT)
-                return true;   // timeout → 不要斷
-        #else
+            {
+                // ✅ WAN 正常情況：只是暫時沒資料
+                continue;
+            }
+#else
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return true;   // timeout → 不要斷
-        #endif
-
+            {
+                continue;
+            }
+#endif
+            // 真正錯誤
+            print_socket_error();
             return false;
         }
 
-        // int r = recv(fd, (char*)buf + received, len - receied, 0);
-        // printf("r = %d\n", r);
-        // if (r <= 0)
-        //     print_socket_error();
-        //     return false;
-
+        // 正常收到資料
         received += r;
     }
 
     return true;
 }
+
 
 // ======================
 // main thread loop
@@ -170,44 +173,47 @@ void Listener::run()
 // ======================
 // client handler
 // ======================
+
 void Listener::handle_client(socket_t client_fd, std::string ip)
 {
     struct timeval tv;
-    tv.tv_sec = 30;
+    tv.tv_sec = 30;   // WAN 上完全 OK
     tv.tv_usec = 0;
 
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
                (const char*)&tv, sizeof(tv));
 
-    while (true)
+    while (running_)
     {
         PacketHeader header;
 
-        // recv_all(client_fd, &header, sizeof(header));
-        if (!recv_all(client_fd, &header, sizeof(header))) {
-            std::cout << "[Client disconnected]\n";
+        // 嘗試收 header（會一直等，timeout 不會斷線）
+        if (!recv_all(client_fd, &header, sizeof(header)))
+        {
+            std::cout << "[Client session ended] " << ip << std::endl;
             break;
         }
 
         header.length = ntohl(header.length);
 
-        if (header.length == 0 || header.length > 10 * 1024 * 1024) {
-            std::cout << "[ERROR] Invalid length\n";
+        if (header.length == 0 || header.length > 10 * 1024 * 1024)
+        {
+            std::cout << "[ERROR] Invalid packet length\n";
             break;
         }
 
         std::vector<char> data(header.length);
 
-        // recv_all(client_fd, data.data(), header.length);
-
-        if (!recv_all(client_fd, data.data(), header.length)) {
-            std::cout << "[Client disconnected during payload]\n";
+        if (!recv_all(client_fd, data.data(), header.length))
+        {
+            std::cout << "[Client session ended during payload] " << ip << std::endl;
             break;
         }
 
         dispatch(header.type, header.length, data, ip);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+
+    close_socket(client_fd);
 }
 
 // ======================
@@ -286,6 +292,8 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
 
         case MSG_SET_AUTO_FLASH:
         {
+            std::cout << "[MSG_SET_AUTO_FLASH] "
+                          << auto_flash_ << std::endl;
             if (length >= sizeof(int)) {
                 int value = 0;
                 memcpy(&value, data.data(), sizeof(int));
@@ -293,19 +301,21 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
                 auto_flash_ = (value != 0);
                 auto& c = clients_map[ip];  // auto-create if not exist
                 c.auto_flash = (value != 0);
-                std::cout << "[MSG_SET_AUTO_FLASH] "
-                          << auto_flash_ << std::endl;
+                // std::cout << "[MSG_SET_AUTO_FLASH] "
+                //           << auto_flash_ << std::endl;
+                std::cout << "[MSG_SET_AUTO_FLASH] Size > sizeof(int) " << std::endl;
             }
             break;
         }
 
         case MSG_INSTALLER_PATH:
         {
+            std::cout << "[MSG_INSTALLER_PATH] " << installer_path << std::endl;
             std::string installer_path_(data.begin(), data.end());
             installer_path = installer_path_;
             auto& c = clients_map[ip];  // auto-create if not exist
             c.installer_path = installer_path_;
-            std::cout << "[MSG_INSTALLER_PATH] " << installer_path << std::endl;
+            std::cout << "[MSG_INSTALLER_PATH] Dispatched successfully" << std::endl;
             fflush(stdout);
             break;
         }

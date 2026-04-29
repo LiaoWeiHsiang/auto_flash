@@ -9,7 +9,7 @@ project(auto_flash_tools
 # ===== Build Options =====
 option(BUILD_AUTO_FLASH "Build auto_flash tool" OFF)
 option(BUILD_FLASH_EXE  "Build flash_exe tool"  OFF)
-option(BUILD_HOST_SERVER  "Build flash_exe tool"  OFF)
+option(BUILD_HOST_SERVER  "Build host_server"  OFF)
 
 
 # ===== C++ Standard =====
@@ -93,7 +93,7 @@ if (BUILD_FLASH_EXE)
 endif()
 
 
-if(BUILD_HOST_SERVER)
+if(BUILD_HOST_SERVER OR BUILD_HOST_SERVER_WINDOWS)
     add_executable(server 
         host_server/server_multi_plat.cpp
         utils/talker/talker.cpp
@@ -111,6 +111,7 @@ if(BUILD_HOST_SERVER)
     # target_link_libraries(server ws2_32)
     if (WIN32)
         target_link_libraries(server ws2_32)
+        target_link_options(server PRIVATE -static)
     else()
         target_link_libraries(server pthread)
     endif()

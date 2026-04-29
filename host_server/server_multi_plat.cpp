@@ -83,15 +83,29 @@ void set_auto_flash(const std::string& auto_flash,
     if (!installer_path.empty()) {
         if (!talker.send_msg(MSG_INSTALLER_PATH,
                              installer_path.c_str(),
-                             installer_path.size()))
+                             installer_path.size())){
             std::cout << "[Send failed] MSG_INSTALLER_PATH\n";
+        }
+        else{
+            std::cout << "[Send successful] MSG_INSTALLER_PATH\n";
+            std::cout << "MSG_INSTALLER_PATH: " << installer_path << std::endl;
+            
+        }
+    }else{
+        std::cout << "installer path is empty. Can't Send\n";
     }
 
     if (!download_path.empty()) {
         if (!talker.send_msg(MSG_DOWNLOAD_PATH,
                              download_path.c_str(),
-                             download_path.size()))
+                             download_path.size())){
             std::cout << "[Send failed] MSG_DOWNLOAD_PATH\n";
+        }
+        else{
+            std::cout << "[Send successful] MSG_DOWNLOAD_PATH\n";
+        }
+    }else{
+        std::cout << "download path is empty. Can't Send\n";
     }
 }
 

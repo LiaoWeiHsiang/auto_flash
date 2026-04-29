@@ -28,83 +28,187 @@ bool auto_flash{false};
 std::atomic<bool> copy_cancel{false};
 std::atomic<bool> copy_running{false};
 std::thread copy_thread;
+
+
+#ifdef _WIN32
+DWORD CALLBACK CopyProgressRoutine(
+    LARGE_INTEGER TotalFileSize,
+    LARGE_INTEGER TotalBytesTransferred,
+    LARGE_INTEGER StreamSize,
+    LARGE_INTEGER StreamBytesTransferred,
+    DWORD dwStreamNumber,
+    DWORD dwCallbackReason,
+    HANDLE hSourceFile,
+    HANDLE hDestinationFile,
+    LPVOID lpData)
+{
+    std::atomic<bool>* cancel =
+        static_cast<std::atomic<bool>*>(lpData);
+
+    if (cancel && cancel->load())
+        return PROGRESS_CANCEL; 
+
+    return PROGRESS_CONTINUE;
+}
+
+bool copy_file_win32(const std::wstring& src,
+                     const std::wstring& dst,
+                     std::atomic<bool>* cancel)
+{
+    BOOL ok = CopyFileExW(
+        src.c_str(),
+        dst.c_str(),
+        CopyProgressRoutine,  
+        cancel,             
+        nullptr,
+        COPY_FILE_RESTARTABLE
+    );
+
+    if (!ok)
+    {
+        DWORD err = GetLastError();
+        if (err == ERROR_REQUEST_ABORTED)
+            std::cout << "[COPY] cancelled\n";
+        else
+            std::cout << "[COPY ERROR] CopyFileEx failed: " << err << "\n";
+
+        return false;
+    }
+
+    return true;
+}
+#endif
+
 void copy_worker(std::string src, std::string dst)
 {
-    // std::cout << "[COPY] start\n";
-    // std::cout << "[COPY] src = [" << src << "]\n";
-    // std::cout << "[COPY] dst = [" << dst << "]\n";
-
-    // ===== empty path =====
-    if (src.empty() || dst.empty())
+    if (src.empty())
     {
-        std::cout << "[COPY ERROR] src or dst is empty\n";
+        std::cout << "[COPY ERROR] src is empty\n";
+        return;
+    }
+    if (dst.empty()){
+        std::cout << "[COPY ERROR] dst is empty\n";
         return;
     }
 
-    // ===== src must exist =====
-    if (!std::filesystem::exists(src))
+
+    std::filesystem::path src_path(src);
+    std::filesystem::path dst_path(dst);
+
+    if (!std::filesystem::exists(src_path))
     {
         std::cout << "[COPY ERROR] src not exist: " << src << "\n";
         return;
     }
 
-    try
-    {
-        std::filesystem::create_directories(dst);
-    }
-    catch (const std::exception& e)
-    {
-        std::cout << "[COPY ERROR] create_directories failed: " << e.what() << "\n";
-        return;
-    }
+    // Installer Path 必須存在
+    std::filesystem::create_directories(dst_path);
 
     try
     {
-        for (auto& entry : std::filesystem::recursive_directory_iterator(src))
+        // ===== CASE 1: 單一檔案 =====
+        if (std::filesystem::is_regular_file(src_path))
         {
             if (copy_cancel)
             {
-                std::cout << "[COPY] cancelled\n";
+                std::cout << "[COPY] cancelled before start\n";
                 return;
             }
 
-            auto rel = std::filesystem::relative(entry.path(), src);
-            auto target = std::filesystem::path(dst) / rel;
+            std::filesystem::path target =
+                dst_path / src_path.filename();
 
-            try
+#ifdef _WIN32
+            copy_file_win32(
+                src_path.wstring(),
+                target.wstring(),
+                &copy_cancel
+            );
+#else
+            // Linux / POSIX
+            std::ifstream in(src, std::ios::binary);
+            std::ofstream out(target, std::ios::binary);
+
+            char buf[1024 * 64];
+            while (in && out)
             {
+                if (copy_cancel)
+                {
+                    std::cout << "[COPY] cancelled\n";
+                    return;
+                }
+
+                in.read(buf, sizeof(buf));
+                out.write(buf, in.gcount());
+            }
+#endif
+            return;
+        }
+
+        if (std::filesystem::is_directory(src_path))
+        {
+            for (const auto& entry :
+                 std::filesystem::recursive_directory_iterator(src_path))
+            {
+                if (copy_cancel)
+                {
+                    std::cout << "[COPY] cancelled\n";
+                    return;
+                }
+
+                // 只做字串運算，避免 canonical
+                std::wstring rel =
+                    entry.path().wstring().substr(
+                        src_path.wstring().size());
+
+                if (!rel.empty() &&
+                    (rel[0] == L'\\' || rel[0] == L'/'))
+                    rel.erase(0, 1);
+
+                std::filesystem::path target = dst_path / rel;
+
                 if (entry.is_directory())
                 {
                     std::filesystem::create_directories(target);
-                    std::cout << "[COPY DIR] " << target.string() << "\n";
                 }
-                else
+                else if (entry.is_regular_file())
                 {
-                    std::filesystem::copy_file(
-                        entry.path(),
-                        target,
-                        std::filesystem::copy_options::overwrite_existing
-                    );
+                    std::filesystem::create_directories(target.parent_path());
 
-                    std::cout << "[COPY FILE] " << entry.path().string()
-                              << " -> " << target.string() << "\n";
+#ifdef _WIN32
+                    copy_file_win32(
+                        entry.path().wstring(),
+                        target.wstring(),
+                        &copy_cancel
+                    );
+#else
+                    std::ifstream in(entry.path(), std::ios::binary);
+                    std::ofstream out(target, std::ios::binary);
+
+                    char buf[1024 * 64];
+                    while (in && out)
+                    {
+                        if (copy_cancel)
+                            return;
+
+                        in.read(buf, sizeof(buf));
+                        out.write(buf, in.gcount());
+                    }
+#endif
                 }
             }
-            catch (const std::exception& e)
-            {
-                std::cout << "[COPY ERROR] file: " 
-                          << entry.path() 
-                          << " msg: " << e.what() << "\n";
-            }
+
+            std::cout << "[COPY] folder done\n";
+            return;
         }
+
+        std::cout << "[COPY ERROR] unsupported src type\n";
     }
     catch (const std::exception& e)
     {
-        std::cout << "[COPY ERROR] iterator failed: " << e.what() << "\n";
-        return;
+        std::cout << "[COPY ERROR] copy failed: "
+                  << e.what() << "\n";
     }
-
-    std::cout << "[COPY] done\n";
 }
 
 std::string get_device_name()
@@ -118,37 +222,37 @@ std::string get_device_name()
     return "UNKNOWN_PC";
 }
 
-bool is_folder_complete(const std::string& src_path, const std::string& dst_path) {
-    try {
-        if (!std::filesystem::exists(dst_path)) return false;
+// bool is_folder_complete(const std::string& src_path, const std::string& dst_path) {
+//     try {
+//         if (!std::filesystem::exists(dst_path)) return false;
 
-        // 1. 比較檔案數量
-        auto src_iter = std::filesystem::recursive_directory_iterator(src_path);
-        auto dst_iter = std::filesystem::recursive_directory_iterator(dst_path);
+//         // 1. 比較檔案數量
+//         auto src_iter = std::filesystem::recursive_directory_iterator(src_path);
+//         auto dst_iter = std::filesystem::recursive_directory_iterator(dst_path);
         
-        size_t src_count = std::distance(std::filesystem::begin(src_iter), std::filesystem::end(src_iter));
-        size_t dst_count = std::distance(std::filesystem::begin(dst_iter), std::filesystem::end(dst_iter));
+//         size_t src_count = std::distance(std::filesystem::begin(src_iter), std::filesystem::end(src_iter));
+//         size_t dst_count = std::distance(std::filesystem::begin(dst_iter), std::filesystem::end(dst_iter));
 
-        if (src_count != dst_count) return false;
+//         if (src_count != dst_count) return false;
 
-        // 2. 比較每個檔案的大小
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(src_path)) {
-            if (std::filesystem::is_regular_file(entry)) {
-                // 取得相對路徑
-                auto rel_path = std::filesystem::relative(entry.path(), src_path);
-                auto target_path = std::filesystem::path(dst_path) / rel_path;
+//         // 2. 比較每個檔案的大小
+//         for (const auto& entry : std::filesystem::recursive_directory_iterator(src_path)) {
+//             if (std::filesystem::is_regular_file(entry)) {
+//                 // 取得相對路徑
+//                 auto rel_path = std::filesystem::relative(entry.path(), src_path);
+//                 auto target_path = std::filesystem::path(dst_path) / rel_path;
 
-                if (!std::filesystem::exists(target_path) || 
-                    std::filesystem::file_size(entry.path()) != std::filesystem::file_size(target_path)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
+//                 if (!std::filesystem::exists(target_path) || 
+//                     std::filesystem::file_size(entry.path()) != std::filesystem::file_size(target_path)) {
+//                     return false;
+//                 }
+//             }
+//         }
+//         return true;
+//     } catch (...) {
+//         return false;
+//     }
+// }
 
 void com_monitor(const std::string& ip, Listener* listener)
 {
@@ -187,13 +291,6 @@ void com_monitor(const std::string& ip, Listener* listener)
                 }
             }
         }
-
-        // if (!talker.send_msg(MSG_HEART_BEAT,
-        //                 msg.c_str(),
-        //                 msg.size()))
-        // {
-        //     std::cout << "[Send failed] MSG_HEART_BEAT\n";
-        // }
 
         std::string device_name = get_device_name();
 
@@ -235,11 +332,11 @@ void com_monitor(const std::string& ip, Listener* listener)
                     }
                 }else{
 
-                    bool complete = is_folder_complete(download, installer);
-                    if (!complete){
-                        std::cout << "installer path: " << installer << " maybe incomplete!!!" << std::endl;
+                    // bool complete = is_folder_complete(download, installer);
+                    // if (!complete){
+                    //     std::cout << "installer path: " << installer << " maybe incomplete!!!" << std::endl;
 
-                    }
+                    // }
                 }
             }
         }
@@ -264,9 +361,17 @@ int main(int argc, char* argv[])
     Listener listener(listen_port);
     listener.start();
 
-    // std::string ip = " 10.235.50.244";
-    std::string ip = "100.86.11.122";
+    // std::string ip = "10.81.95.53";  // USA server
+    std::string ip = "10.235.50.244"; // trueforge-bm
+    // std::string ip = "100.86.11.122";
     // std::string ip = "192.168.1.106";
+
+    
+    // argv[1] exists -> override default
+    if (argc >= 2) {
+        ip = argv[1];
+    }
+
 
     std::thread com_monitor_thread(com_monitor,ip, &listener);
     com_monitor_thread.detach();
@@ -283,7 +388,7 @@ int main(int argc, char* argv[])
         {
             if (!std::filesystem::exists(listener.installer_path))
             {
-                std::cout << "CAN'T FIND INSTALLER!!!" << std::endl;
+                std::cout << "CAN'T FIND INSTALLER!!!  INSTALLER PATH: " << listener.installer_path << std::endl;
             }else{
 
                 {
