@@ -131,6 +131,58 @@ input:checked + .slider:before {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
+
+.log-toggle {
+  margin-left: 10px;
+  padding: 4px 8px;
+  background-color: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: background-color 0.2s;
+}
+
+.log-toggle:hover {
+  background-color: #5a6268;
+}
+
+.log-container {
+  display: none;
+  margin-top: 8px;
+  padding: 10px;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.log-container.show {
+  display: block;
+}
+
+.log-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-container::-webkit-scrollbar-track {
+  background: #2d2d2d;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+
+.log-container::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}
 </style>
 </head>
 
@@ -209,6 +261,52 @@ function toggleComports(ip, event) {
   }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Track which logs are expanded
+let expandedLogs = new Set();
+
 function updateComportList(ip, comports) {
   const comportList = document.getElementById(`comports_${ip}`);
   if (!comportList) return;
@@ -218,17 +316,91 @@ function updateComportList(ip, comports) {
     return;
   }
 
-  let html = '';
+  // Always update, but preserve expanded state
   for (const [num, info] of Object.entries(comports)) {
-    const statusClass = `status-${info.status.toLowerCase()}`;
-    html += `
-      <div class="comport-item">
+    const itemId = `item_${ip}_${num}`.replace(/\./g, '_');
+    const statusId = `status_${ip}_${num}`.replace(/\./g, '_');
+    const containerId = `logcontainer_${ip}_${num}`.replace(/\./g, '_');
+    const buttonId = `logbtn_${ip}_${num}`.replace(/\./g, '_');
+    
+    let itemElem = document.getElementById(itemId);
+    
+    if (!itemElem) {
+      // Create new item
+      const isExpanded = expandedLogs.has(containerId);
+      const showClass = isExpanded ? 'show' : '';
+      const buttonText = isExpanded ? 'Hide Log' : 'Show Log';
+      const statusClass = `status-${info.status.toLowerCase()}`;
+      
+      const newItem = document.createElement('div');
+      newItem.className = 'comport-item';
+      newItem.id = itemId;
+      newItem.innerHTML = `
         <div class="comport-number">COM${num}</div>
-        <div class="comport-status ${statusClass}">${info.status}</div>
-      </div>
-    `;
+        <div class="comport-status ${statusClass}" id="${statusId}">${info.status}</div>
+        <button id="${buttonId}" class="log-toggle" onclick="toggleLog('${containerId}', '${buttonId}', event)">${buttonText}</button>
+        <div id="${containerId}" class="log-container ${showClass}">${escapeHtml(info.log || 'No log available')}</div>
+      `;
+      comportList.appendChild(newItem);
+    } else {
+      // Update existing item
+      const statusElem = document.getElementById(statusId);
+      if (statusElem) {
+        const statusClass = `status-${info.status.toLowerCase()}`;
+        statusElem.className = `comport-status ${statusClass}`;
+        statusElem.textContent = info.status;
+      }
+      
+      const logElem = document.getElementById(containerId);
+      if (logElem) {
+        const wasAtBottom = (logElem.scrollHeight - logElem.scrollTop <= logElem.clientHeight + 50);
+        logElem.textContent = info.log || 'No log available';
+        
+        // Auto scroll to bottom if was already at bottom or if expanded
+        if (expandedLogs.has(containerId) && wasAtBottom) {
+          logElem.scrollTop = logElem.scrollHeight;
+        }
+      }
+    }
   }
-  comportList.innerHTML = html;
+  
+  // Remove items that no longer exist
+  const currentNums = new Set(Object.keys(comports));
+  const items = comportList.querySelectorAll('.comport-item');
+  items.forEach(item => {
+    const match = item.id.match(/item_.*_(\d+)$/);
+    if (match && !currentNums.has(match[1])) {
+      item.remove();
+    }
+  });
+}
+
+function toggleLog(containerId, buttonId, event) {
+  event.stopPropagation();
+  const container = document.getElementById(containerId);
+  const button = document.getElementById(buttonId);
+  
+  if (!container || !button) return;
+  
+  if (container.classList.contains('show')) {
+    container.classList.remove('show');
+    button.innerText = 'Show Log';
+    expandedLogs.delete(containerId);
+  } else {
+    container.classList.add('show');
+    button.innerText = 'Hide Log';
+    expandedLogs.add(containerId);
+    // Auto scroll to bottom
+    setTimeout(() => {
+      container.scrollTop = container.scrollHeight;
+    }, 10);
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 async function update() {

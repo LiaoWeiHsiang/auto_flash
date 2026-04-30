@@ -285,7 +285,7 @@ int main()
     //     res.set_content(json_str, "application/json");
     // });
 
-        svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
+                svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
 
         json arr = json::array();
 
@@ -303,12 +303,14 @@ int main()
                     case ComportStatus::FLASHING: status_str = "flashing"; break;
                     case ComportStatus::SUCCESS:  status_str = "success";  break;
                     case ComportStatus::FAIL:     status_str = "fail";     break;
+                    case ComportStatus::REMOVED:  continue;  // Skip removed ports
                     default:                      status_str = "unknown";  break;
                 }
                 
                 comport_json[std::to_string(com_num)] = {
                     {"number", com_num},
-                    {"status", status_str}
+                    {"status", status_str},
+                    {"log", com_info.log}  // Add log
                 };
             }
 

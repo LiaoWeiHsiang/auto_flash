@@ -14,6 +14,9 @@ std::atomic<bool> flash_alive{true};
 
 static constexpr int LOG_STALL_TIMEOUT_SEC = 10 * 60; // seconds
 
+// Helper function to send log to server
+void send_comport_log(int comport, const std::string& log_msg);
+
 // ======================
 // run_emmcdl
 // ======================
@@ -42,6 +45,8 @@ bool run_emmcdl(const std::string& folder,
             log_file << s;
             log_file.flush();
         }
+        // Send log to server
+        send_comport_log(comport, s);
     };
 
     write_log("[FLASH] Log file: " + log_name.str() + "\n");
@@ -188,6 +193,26 @@ bool run_emmcdl(const std::string& folder,
     log_file.close();
 
     return success;
+}
+
+// ======================
+// send_comport_log
+// ======================
+void send_comport_log(int comport, const std::string& log_msg)
+{
+    // Append log to comport_map
+    std::lock_guard<std::mutex> lock(com_mutex);
+    if (comport_map.find(comport) != comport_map.end()) {
+        comport_map[comport].log += log_msg;
+        
+        // Limit log size to prevent memory issues (keep last 50KB)
+        const size_t MAX_LOG_SIZE = 50 * 1024;
+        if (comport_map[comport].log.size() > MAX_LOG_SIZE) {
+            comport_map[comport].log = comport_map[comport].log.substr(
+                comport_map[comport].log.size() - MAX_LOG_SIZE
+            );
+        }
+    }
 }
 
 // ======================

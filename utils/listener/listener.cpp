@@ -258,21 +258,53 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
             break;
         }
 
-        case MSG_COMPORT:
+                        case MSG_COMPORT:
         {
             std::cout << "[MSG_COMPORT] Get" << std::endl;
-            if (length >= sizeof(ComportInfo)) {
-                // int port;
-                ComportInfo info;
-                auto& c = clients_map[ip];
-                memcpy(&info, data.data(), sizeof(info));
+            
+            // Parse: int(4 bytes) + status(4 bytes) + log_length(4 bytes) + log_data
+            if (length < 12) {
+                std::cout << "[MSG_COMPORT] Invalid length: " << length << std::endl;
+                break;
+            }
+
+            ComportInfo info;
+            size_t offset = 0;
+            
+            // Read COM number
+            memcpy(&info.number, data.data() + offset, sizeof(int));
+            offset += sizeof(int);
+            
+            // Read status
+            int status_int;
+            memcpy(&status_int, data.data() + offset, sizeof(int));
+            info.status = static_cast<ComportStatus>(status_int);
+            offset += sizeof(int);
+            
+            // Read log length
+            uint32_t log_length;
+            memcpy(&log_length, data.data() + offset, sizeof(uint32_t));
+            offset += sizeof(uint32_t);
+            
+            // Read log data
+            if (offset + log_length <= length) {
+                info.log = std::string(data.data() + offset, log_length);
+            }
+            
+            auto& c = clients_map[ip];
+            
+            // If status is REMOVED, delete from comport_list
+            if (info.status == ComportStatus::REMOVED) {
+                c.comport_list.erase(info.number);
+                std::cout << "[COMPORT] " << info.number << " REMOVED" << std::endl;
+            } else {
                 c.comport_list[info.number] = info;
                 std::cout << "[COMPORT] " << info.number << std::endl;
                 std::cout << "[COMPORT] Status: " << (int)info.status << std::endl;
-                std::cout.flush();
-            }else{
-                std::cout << "[MSG_COMPORT] Invalid length: " << length << std::endl;
+                std::cout << "[COMPORT] Log length: " << info.log.size() << std::endl;
             }
+            
+            std::cout.flush();
             break;
         }
 

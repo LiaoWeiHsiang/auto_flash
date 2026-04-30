@@ -3,6 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <unordered_map>
+#include <string>
+#include <vector>
 
 enum MsgType {
     MSG_HEART_BEAT,
@@ -12,7 +14,8 @@ enum MsgType {
     MSG_LOG,
     MSG_SET_AUTO_FLASH,
     MSG_INSTALLER_PATH,
-    MSG_DOWNLOAD_PATH
+    MSG_DOWNLOAD_PATH,
+    MSG_COMPORT_LOG  // New: COM port specific log
 };
 
 struct Packet {
@@ -31,12 +34,14 @@ enum class ComportStatus{
     PENDING,
     FLASHING,
     FAIL,
-    SUCCESS
+    SUCCESS,
+    REMOVED  // COM port has been removed
 };
 
 struct ComportInfo {
     int number;
     ComportStatus status = ComportStatus::PENDING;
+    std::string log;  // Flash log for this COM port
 };
 
 struct ClientInfo {

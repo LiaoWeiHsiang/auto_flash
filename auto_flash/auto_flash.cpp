@@ -326,11 +326,39 @@ void com_monitor(const std::string& ip, Listener* listener)
                     }
                 }
 
-                // ===== Removed COM detection =====
+                                // ===== Removed COM detection =====
                 for (auto it = comport_map.begin(); it != comport_map.end(); )
                 {
                     if (current_set.find(it->first) == current_set.end()) {
                         std::cout << "[EVENT] COM removed: COM" << it->first << "\n";
+                        
+                        // Mark as REMOVED before erasing
+                        it->second.status = ComportStatus::REMOVED;
+                        
+                        // Send REMOVED status to server
+                        int com = it->first;
+                        ComportInfo& info = it->second;
+                        
+                        std::vector<char> buffer;
+                        buffer.insert(buffer.end(), 
+                            reinterpret_cast<const char*>(&info.number), 
+                            reinterpret_cast<const char*>(&info.number) + sizeof(int));
+                        
+                        int status_int = static_cast<int>(info.status);
+                        buffer.insert(buffer.end(), 
+                            reinterpret_cast<const char*>(&status_int), 
+                            reinterpret_cast<const char*>(&status_int) + sizeof(int));
+                        
+                        uint32_t log_length = static_cast<uint32_t>(info.log.size());
+                        buffer.insert(buffer.end(), 
+                            reinterpret_cast<const char*>(&log_length), 
+                            reinterpret_cast<const char*>(&log_length) + sizeof(uint32_t));
+                        
+                        buffer.insert(buffer.end(), info.log.begin(), info.log.end());
+                        
+                        Talker talker_temp(ip, 9000);
+                        talker_temp.send_msg(MSG_COMPORT, buffer.data(), buffer.size());
+                        
                         it = comport_map.erase(it);
                     } else {
                         ++it;
@@ -391,12 +419,35 @@ void com_monitor(const std::string& ip, Listener* listener)
             std::cout << "[Send failed] MSG_HEART_BEAT\n";
         }
 
-        // ===== Send COM ports status to server =====
+                // ===== Send COM ports status to server =====
         {
             std::lock_guard<std::mutex> lock(com_mutex);
             for (const auto& [com, info] : comport_map)
             {
-                if (!talker.send_msg(MSG_COMPORT, &info, sizeof(ComportInfo)))
+                // Serialize ComportInfo: int + status + log_length + log_data
+                std::vector<char> buffer;
+                
+                // COM number (4 bytes)
+                buffer.insert(buffer.end(), 
+                    reinterpret_cast<const char*>(&info.number), 
+                    reinterpret_cast<const char*>(&info.number) + sizeof(int));
+                
+                // Status (4 bytes)
+                int status_int = static_cast<int>(info.status);
+                buffer.insert(buffer.end(), 
+                    reinterpret_cast<const char*>(&status_int), 
+                    reinterpret_cast<const char*>(&status_int) + sizeof(int));
+                
+                // Log length (4 bytes)
+                uint32_t log_length = static_cast<uint32_t>(info.log.size());
+                buffer.insert(buffer.end(), 
+                    reinterpret_cast<const char*>(&log_length), 
+                    reinterpret_cast<const char*>(&log_length) + sizeof(uint32_t));
+                
+                // Log data
+                buffer.insert(buffer.end(), info.log.begin(), info.log.end());
+                
+                if (!talker.send_msg(MSG_COMPORT, buffer.data(), buffer.size()))
                 {
                     std::cout << "[Send failed] MSG_COMPORT COM" << com << "\n";
                 }
@@ -493,7 +544,7 @@ int main(int argc, char* argv[])
 
     
 
-    while (true)
+        while (true)
     {
         int comport = -1;
 
@@ -509,6 +560,18 @@ int main(int argc, char* argv[])
                     com_cv.wait(lock, [] {
                         return !new_com_queue.empty();
                     });
+
+                    // Check auto_flash again after waking up
+                    if (!auto_flash) {
+                        std::cout << "[MAIN] Auto flash disabled, clearing queue\n";
+                        // Clear the queue
+                        while (!new_com_queue.empty()) {
+                            int skipped = new_com_queue.front();
+                            new_com_queue.pop();
+                            std::cout << "[SKIP] COM" << skipped << " (auto flash disabled)\n";
+                        }
+                        continue;
+                    }
 
                     comport = new_com_queue.front();
                     new_com_queue.pop();
