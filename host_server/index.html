@@ -2,14 +2,138 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Status Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto Flash Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --primary-color: #2563eb;
+  --primary-hover: #1d4ed8;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --danger-color: #ef4444;
+  --info-color: #3b82f6;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-tertiary: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+  --border-color: #e2e8f0;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  padding: 20px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.header {
+  background: var(--bg-primary);
+  padding: 24px 32px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-title h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-icon {
+  font-size: 32px;
+}
+
+.header-stats {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--primary-color);
+}
+
+.clients-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.client-card {
+  background: var(--bg-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.client-card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+
 .switch {
   position: relative;
   display: inline-block;
-  width: 60px;
-  height: 34px;
+  width: 56px;
+  height: 30px;
 }
 
 .switch input {
@@ -22,174 +146,578 @@
   position: absolute;
   cursor: pointer;
   inset: 0;
-  background-color: #ccc;
-  transition: .3s;
-  border-radius: 34px;
+  background-color: var(--text-tertiary);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 30px;
 }
 
 .slider:before {
   position: absolute;
   content: "";
-  height: 26px;
-  width: 26px;
+  height: 22px;
+  width: 22px;
   left: 4px;
   bottom: 4px;
   background-color: white;
-  transition: .3s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 input:checked + .slider {
-  background-color: #4CAF50;
+  background: linear-gradient(135deg, var(--success-color), #059669);
 }
 
 input:checked + .slider:before {
   transform: translateX(26px);
 }
 
+.slider:hover {
+  opacity: 0.9;
+}
+
 .client-row {
-  display: flex;
-  gap: 20px;
-  margin: 10px 0;
+  display: grid;
+  grid-template-columns: 40px 160px 140px 100px 100px 80px 1fr 1fr;
+  gap: 16px;
+  padding: 20px 24px;
   align-items: center;
-  border-bottom: 1px solid #ddd;
-  padding-bottom: 8px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.2s ease;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .client-row:hover {
-  background-color: #f5f5f5;
+  background-color: var(--bg-secondary);
 }
 
 .expand-icon {
-  width: 20px;
-  text-align: center;
-  font-weight: bold;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
   user-select: none;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  color: var(--text-secondary);
+}
+
+.expand-icon:hover {
+  background: var(--bg-tertiary);
+  color: var(--primary-color);
+}
+
+.client-ip {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.client-device {
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.client-device::before {
+  content: "💻";
+  font-size: 16px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-alive {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-alive::before {
+  content: "●";
+  font-size: 16px;
+  color: var(--success-color);
+  animation: pulse-dot 2s infinite;
+}
+
+.status-dead {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-dead::before {
+  content: "●";
+  font-size: 16px;
+  color: var(--danger-color);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.auto-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.auto-on {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.auto-off {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+
+.expanded-content {
+  display: none;
+  padding: 0 24px 24px 24px;
+  background: var(--bg-secondary);
+}
+
+.expanded-content.show {
+  display: block;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .comport-list {
-  display: none;
-  margin: 10px 0 10px 40px;
-  padding: 10px;
-  background-color: #f9f9f9;
-  border-left: 3px solid #4CAF50;
-  border-radius: 4px;
-}
-
-.comport-list.expanded {
-  display: block;
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
 }
 
 .comport-item {
   display: flex;
-  gap: 15px;
-  padding: 8px;
-  margin: 5px 0;
-  background-color: white;
-  border-radius: 4px;
-  border: 1px solid #ddd;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-color);
   align-items: center;
+  transition: all 0.2s ease;
+}
+
+.comport-item:hover {
+  border-color: var(--primary-color);
+  box-shadow: var(--shadow-sm);
 }
 
 .comport-number {
-  font-weight: bold;
-  min-width: 60px;
+  font-weight: 700;
+  font-size: 16px;
+  min-width: 80px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.comport-number::before {
+  content: "🔌";
+  font-size: 20px;
 }
 
 .comport-status {
-  padding: 4px 12px;
-  border-radius: 12px;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
   font-size: 12px;
-  font-weight: bold;
+  font-weight: 700;
   text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .status-pending {
-  background-color: #FFF3CD;
-  color: #856404;
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  color: #92400e;
+}
+
+.status-pending::before {
+  content: "⏳";
 }
 
 .status-flashing {
-  background-color: #CCE5FF;
-  color: #004085;
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  color: #1e40af;
   animation: pulse 1.5s infinite;
 }
 
+.status-flashing::before {
+  content: "⚡";
+}
+
 .status-success {
-  background-color: #D4EDDA;
-  color: #155724;
+  background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+  color: #065f46;
+}
+
+.status-success::before {
+  content: "✓";
 }
 
 .status-fail {
-  background-color: #F8D7DA;
-  color: #721C24;
+  background: linear-gradient(135deg, #fee2e2, #fecaca);
+  color: #991b1b;
+}
+
+.status-fail::before {
+  content: "✗";
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+  0%, 100% { 
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.7;
+    transform: scale(0.98);
+  }
 }
 
 .log-toggle {
-  margin-left: 10px;
-  padding: 4px 8px;
-  background-color: #6c757d;
+  margin-left: auto;
+  padding: 8px 16px;
+  background: var(--primary-color);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 11px;
-  transition: background-color 0.2s;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .log-toggle:hover {
-  background-color: #5a6268;
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.log-toggle:active {
+  transform: translateY(0);
 }
 
 .log-container {
   display: none;
-  margin-top: 8px;
-  padding: 10px;
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  border-radius: 4px;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
+  margin-top: 12px;
+  padding: 16px;
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  color: #e2e8f0;
+  border-radius: var(--radius-md);
+  font-family: 'Fira Code', 'Courier New', monospace;
+  font-size: 13px;
   max-height: 400px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-wrap: break-word;
+  border: 1px solid #334155;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .log-container.show {
   display: block;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .log-container::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
 }
 
 .log-container::-webkit-scrollbar-track {
-  background: #2d2d2d;
+  background: #0f172a;
+  border-radius: 5px;
 }
 
 .log-container::-webkit-scrollbar-thumb {
-  background: #555;
-  border-radius: 4px;
+  background: linear-gradient(135deg, #475569, #334155);
+  border-radius: 5px;
 }
 
 .log-container::-webkit-scrollbar-thumb:hover {
-  background: #777;
+  background: linear-gradient(135deg, #64748b, #475569);
+}
+
+.file-status-container {
+  margin: 16px 0;
+  padding: 20px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+
+.file-status-title {
+  font-weight: 700;
+  font-size: 16px;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-status-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.file-status-badge {
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-status-not-found {
+  background: linear-gradient(135deg, #fee2e2, #fecaca);
+  color: #991b1b;
+}
+
+.file-status-not-found::before {
+  content: "❌";
+}
+
+.file-status-found {
+  background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+  color: #065f46;
+}
+
+.file-status-found::before {
+  content: "✓";
+}
+
+.file-status-copying {
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  color: #1e40af;
+  animation: pulse 1.5s infinite;
+}
+
+.file-status-copying::before {
+  content: "📥";
+}
+
+.file-status-complete {
+  background: linear-gradient(135deg, #ccfbf1, #99f6e4);
+  color: #115e59;
+}
+
+.file-status-complete::before {
+  content: "✓";
+}
+
+.file-status-failed {
+  background: linear-gradient(135deg, #fee2e2, #fecaca);
+  color: #991b1b;
+}
+
+.file-status-failed::before {
+  content: "⚠️";
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 28px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--success-color), #059669);
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.path-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.path-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.path-input {
+  padding: 10px 14px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-family: 'Fira Code', monospace;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  transition: all 0.2s ease;
+  width: 100%;
+  min-width: 200px;
+}
+
+.path-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.path-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.path-display-row {
+  margin: 12px 0 12px 64px;
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border-left: 4px solid var(--primary-color);
+}
+
+.path-display-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.path-display-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.path-display {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: 'Fira Code', monospace;
+  background: var(--bg-primary);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.path-display.empty {
+  color: var(--text-tertiary);
+  font-style: italic;
 }
 </style>
 </head>
 
 <body>
 
-<h2>Clients</h2>
-<div id="client_list"></div>
+<div class="container">
+  <div class="header">
+    <div class="header-title">
+      <span class="header-icon">⚡</span>
+      <h1>Auto Flash Monitor</h1>
+    </div>
+    <div class="header-stats">
+      <div class="stat-item">
+        <span class="stat-label">Total Clients</span>
+        <span class="stat-value" id="total-clients">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Active</span>
+        <span class="stat-value" id="active-clients" style="color: var(--success-color);">0</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="clients-container" id="client_list"></div>
+</div>
 
 <script>
 
@@ -203,9 +731,10 @@ function renderClientsOnce(clients) {
   initialized = true;
 
   clients.forEach(c => {
-    // Create wrapper for client row + comport list
-    const wrapper = document.createElement("div");
-    wrapper.id = `wrapper_${c.ip}`;
+    // Create client card
+    const card = document.createElement("div");
+    card.id = `card_${c.ip}`;
+    card.className = "client-card";
 
     // Create client row
     const row = document.createElement("div");
@@ -214,10 +743,10 @@ function renderClientsOnce(clients) {
 
     row.innerHTML = `
       <div class="expand-icon" onclick="toggleComports('${c.ip}', event)">▶</div>
-      <div style="width:140px">${c.ip}</div>
-      <div style="width:120px">${c.device}</div>
-      <div class="heartbeat" style="width:100px"></div>
-      <div class="auto" style="width:80px"></div>
+      <div class="client-ip">${c.ip}</div>
+      <div class="client-device">${c.device}</div>
+      <div class="heartbeat"></div>
+      <div class="auto"></div>
 
       <label class="switch" onclick="event.stopPropagation()">
         <input type="checkbox" class="toggle-switch"
@@ -225,40 +754,173 @@ function renderClientsOnce(clients) {
         <span class="slider"></span>
       </label>
 
-      <div style="display:flex; flex-direction:column; gap:4px;" onclick="event.stopPropagation()">
-        <div style="font-size:12px; color:#666;">Installer Path</div>
-        <input class="installer" style="width:220px" placeholder="Enter path..." value="">
+      <div class="path-input-group" onclick="event.stopPropagation()">
+        <div class="path-label">📁 Installer Path</div>
+        <input class="installer path-input" placeholder="Enter installer path..." value="">
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:4px;" onclick="event.stopPropagation()">
-        <div style="font-size:12px; color:#666;">Download Path</div>
-        <input class="download" style="width:220px" placeholder="Enter path..." value="">
+      <div class="path-input-group" onclick="event.stopPropagation()">
+        <div class="path-label">💾 Download Path</div>
+        <input class="download path-input" placeholder="Enter download path..." value="">
       </div>
     `;
+
+    // Create expanded content container
+    const expandedContent = document.createElement("div");
+    expandedContent.id = `expanded_${c.ip}`;
+    expandedContent.className = "expanded-content";
+
+    // Create path display row
+    const pathDisplay = document.createElement("div");
+    pathDisplay.id = `pathdisplay_${c.ip}`;
+    pathDisplay.className = "path-display-row";
+    pathDisplay.innerHTML = `
+      <div class="path-display-item">
+        <span class="path-display-label">📍 Client Installer:</span>
+        <div class="path-display client-installer-path empty">(empty)</div>
+      </div>
+      <div class="path-display-item">
+        <span class="path-display-label">💾 Client Download:</span>
+        <div class="path-display client-download-path empty">(empty)</div>
+      </div>
+    `;
+
+    // Create file status container
+    const fileStatus = document.createElement("div");
+    fileStatus.id = `filestatus_${c.ip}`;
+    fileStatus.className = "file-status-container";
+    fileStatus.style.display = "none";
 
     // Create comport list container
     const comportList = document.createElement("div");
     comportList.id = `comports_${c.ip}`;
     comportList.className = "comport-list";
 
-    wrapper.appendChild(row);
-    wrapper.appendChild(comportList);
-    container.appendChild(wrapper);
+    expandedContent.appendChild(pathDisplay);
+    expandedContent.appendChild(fileStatus);
+    expandedContent.appendChild(comportList);
+
+    card.appendChild(row);
+    card.appendChild(expandedContent);
+    container.appendChild(card);
   });
 }
 
 function toggleComports(ip, event) {
   event.stopPropagation();
-  const comportList = document.getElementById(`comports_${ip}`);
+  const expandedContent = document.getElementById(`expanded_${ip}`);
+  const fileStatus = document.getElementById(`filestatus_${ip}`);
   const icon = event.target;
   
-  if (comportList.classList.contains('expanded')) {
-    comportList.classList.remove('expanded');
+  if (expandedContent.classList.contains('show')) {
+    expandedContent.classList.remove('show');
+    fileStatus.style.display = 'none';
     icon.innerText = '▶';
   } else {
-    comportList.classList.add('expanded');
+    expandedContent.classList.add('show');
+    fileStatus.style.display = 'block';
     icon.innerText = '▼';
   }
+}
+
+function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
+  const fileStatus = document.getElementById(`filestatus_${ip}`);
+  if (!fileStatus) return;
+  
+  let statusBadgeClass = '';
+  let statusText = '';
+  
+  switch (fileInfo.status) {
+    case 'not_found':
+      statusBadgeClass = 'file-status-not-found';
+      statusText = 'NOT FOUND';
+      break;
+    case 'found':
+      statusBadgeClass = 'file-status-found';
+      statusText = 'FOUND';
+      break;
+    case 'copying':
+      statusBadgeClass = 'file-status-copying';
+      statusText = 'COPYING';
+      break;
+    case 'copy_complete':
+      statusBadgeClass = 'file-status-complete';
+      statusText = 'COMPLETE';
+      break;
+    case 'copy_failed':
+      statusBadgeClass = 'file-status-failed';
+      statusText = 'FAILED';
+      break;
+    default:
+      statusBadgeClass = 'file-status-not-found';
+      statusText = 'UNKNOWN';
+  }
+  
+  let html = `
+    <div class="file-status-title">📁 Installer Status</div>
+    <div class="file-status-item">
+      <span>Status:</span>
+      <span class="file-status-badge ${statusBadgeClass}">${statusText}</span>
+    </div>
+  `;
+  
+  if (fileInfo.status === 'copying') {
+    const progressPercent = fileInfo.progress.toFixed(1);
+    const speedMB = fileInfo.speed_mbps.toFixed(2);
+    const totalMB = (fileInfo.total_bytes / (1024 * 1024)).toFixed(2);
+    const copiedMB = (fileInfo.copied_bytes / (1024 * 1024)).toFixed(2);
+    const etaMin = Math.floor(fileInfo.eta_seconds / 60);
+    const etaSec = fileInfo.eta_seconds % 60;
+    
+    html += `
+      <div class="file-status-item">
+        <div class="progress-bar-container">
+          <div class="progress-bar" style="width: ${progressPercent}%">
+            ${progressPercent}%
+          </div>
+        </div>
+      </div>
+      <div class="file-status-item">
+        <span>📊 Progress:</span>
+        <span>${copiedMB} MB / ${totalMB} MB</span>
+      </div>
+      <div class="file-status-item">
+        <span>⚡ Speed:</span>
+        <span>${speedMB} MB/s</span>
+      </div>
+      <div class="file-status-item">
+        <span>⏱️ ETA:</span>
+        <span>${etaMin}m ${etaSec}s</span>
+      </div>
+    `;
+  } else if (fileInfo.status === 'copy_failed' && fileInfo.error_msg) {
+    html += `
+      <div class="file-status-item" style="color: #721c24;">
+        <span>❌ Error:</span>
+        <span>${escapeHtml(fileInfo.error_msg)}</span>
+      </div>
+    `;
+  } else if (fileInfo.status === 'copy_complete' || fileInfo.status === 'found') {
+    // Show size for both COMPLETE and FOUND status
+    if (fileInfo.total_bytes > 0) {
+      const totalMB = (fileInfo.total_bytes / (1024 * 1024)).toFixed(2);
+      const totalGB = (fileInfo.total_bytes / (1024 * 1024 * 1024)).toFixed(2);
+      
+      // Show GB if > 1GB, otherwise show MB
+      const sizeStr = fileInfo.total_bytes >= 1024 * 1024 * 1024 
+        ? `${totalGB} GB` 
+        : `${totalMB} MB`;
+      
+      html += `
+        <div class="file-status-item">
+          <span>💾 Size:</span>
+          <span>${sizeStr}</span>
+        </div>
+      `;
+    }
+  }
+  
+  fileStatus.innerHTML = html;
 }
 
 
@@ -312,7 +974,7 @@ function updateComportList(ip, comports) {
   if (!comportList) return;
 
   if (!comports || Object.keys(comports).length === 0) {
-    comportList.innerHTML = '<div style="color:#999; font-style:italic;">No COM ports detected</div>';
+    comportList.innerHTML = '<div style="color: var(--text-tertiary); font-style: italic; text-align: center; padding: 20px;">🔌 No COM ports detected</div>';
     return;
   }
 
@@ -329,7 +991,7 @@ function updateComportList(ip, comports) {
       // Create new item
       const isExpanded = expandedLogs.has(containerId);
       const showClass = isExpanded ? 'show' : '';
-      const buttonText = isExpanded ? 'Hide Log' : 'Show Log';
+      const buttonText = isExpanded ? '👁️ Hide Log' : '👁️ Show Log';
       const statusClass = `status-${info.status.toLowerCase()}`;
       
       const newItem = document.createElement('div');
@@ -384,11 +1046,11 @@ function toggleLog(containerId, buttonId, event) {
   
   if (container.classList.contains('show')) {
     container.classList.remove('show');
-    button.innerText = 'Show Log';
+    button.innerHTML = '👁️ Show Log';
     expandedLogs.delete(containerId);
   } else {
     container.classList.add('show');
-    button.innerText = 'Hide Log';
+    button.innerHTML = '👁️ Hide Log';
     expandedLogs.add(containerId);
     // Auto scroll to bottom
     setTimeout(() => {
@@ -408,6 +1070,11 @@ async function update() {
     const r = await fetch("/clients");
     const clients = await r.json();
 
+    // Update header stats
+    document.getElementById('total-clients').textContent = clients.length;
+    const activeCount = clients.filter(c => c.heartbeat).length;
+    document.getElementById('active-clients').textContent = activeCount;
+
     renderClientsOnce(clients);
 
         clients.forEach(c => {
@@ -415,12 +1082,20 @@ async function update() {
       const row = document.getElementById(`row_${c.ip}`);
       if (!row) return;
 
-      // 更新心跳狀態
+            // 更新心跳狀態
       const hb = row.querySelector(".heartbeat");
-      hb.innerText = c.heartbeat ? "ALIVE" : "DEAD";
-      hb.style.color = c.heartbeat ? "green" : "red";
+      if (c.heartbeat) {
+        hb.innerHTML = '<span class="status-badge status-alive">ALIVE</span>';
+      } else {
+        hb.innerHTML = '<span class="status-badge status-dead">DEAD</span>';
+      }
 
-      row.querySelector(".auto").innerText = Number(c.auto_flash) ? "ON" : "OFF";
+      const autoElem = row.querySelector(".auto");
+      if (Number(c.auto_flash)) {
+        autoElem.innerHTML = '<span class="auto-status auto-on">ON</span>';
+      } else {
+        autoElem.innerHTML = '<span class="auto-status auto-off">OFF</span>';
+      }
 
       // 更新開關狀態
       const toggle = row.querySelector(".toggle-switch");
@@ -430,7 +1105,7 @@ async function update() {
       const instInput = row.querySelector(".installer");
       const dlInput = row.querySelector(".download");
 
-      // 只有當 UI 上完全沒有值（且不是手動清空的）時才初始化一次
+            // 只有當 UI 上完全沒有值（且不是手動清空的）時才初始化一次
       // 之後只要標記為 dirty，就絕對不再受後端 c.installer_path 影響
       if (!instInput.dataset.dirty && !instInput.dataset.focus && instInput.value === "") {
          if (c.installer_path) instInput.value = c.installer_path;
@@ -439,8 +1114,44 @@ async function update() {
          if (c.download_path) dlInput.value = c.download_path;
       }
 
-      // 更新 COM port 列表
+      // 更新 Client 路徑顯示（常駐顯示）
+      const pathDisplay = document.getElementById(`pathdisplay_${c.ip}`);
+      if (pathDisplay) {
+        const installerPathElem = pathDisplay.querySelector('.client-installer-path');
+        const downloadPathElem = pathDisplay.querySelector('.client-download-path');
+        
+        if (installerPathElem) {
+          if (c.installer_path && c.installer_path.trim() !== '') {
+            installerPathElem.textContent = c.installer_path;
+            installerPathElem.classList.remove('empty');
+            installerPathElem.title = c.installer_path;  // Tooltip for full path
+          } else {
+            installerPathElem.textContent = '(empty)';
+            installerPathElem.classList.add('empty');
+            installerPathElem.title = '';
+          }
+        }
+        
+        if (downloadPathElem) {
+          if (c.download_path && c.download_path.trim() !== '') {
+            downloadPathElem.textContent = c.download_path;
+            downloadPathElem.classList.remove('empty');
+            downloadPathElem.title = c.download_path;  // Tooltip for full path
+          } else {
+            downloadPathElem.textContent = '(empty)';
+            downloadPathElem.classList.add('empty');
+            downloadPathElem.title = '';
+          }
+        }
+      }
+
+                  // 更新 COM port 列表
       updateComportList(c.ip, c.comport_list);
+      
+      // 更新檔案狀態（傳入路徑資訊）
+      if (c.file_info) {
+        updateFileStatus(c.ip, c.file_info, c.installer_path, c.download_path);
+      }
     });
 
   } catch (e) {

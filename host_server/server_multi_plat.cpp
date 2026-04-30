@@ -175,7 +175,7 @@ private:
     //     }
     // }
 
-    void check_clients()
+        void check_clients()
     {
         using namespace std::chrono;
 
@@ -191,12 +191,19 @@ private:
 
             auto diff = duration_cast<seconds>(now - c.last_seen).count();
 
-            if (diff > 1)
+            // 🔧 增加超時時間到 5 秒，避免網路延遲誤判
+            if (diff > 5)
             {
+                if (c.heartbeat) {
+                    std::cout << "[TIMEOUT] Client " << it->first << " marked as DEAD (last seen " << diff << "s ago)\n";
+                }
                 c.heartbeat = false;
             }
             else
             {
+                if (!c.heartbeat) {
+                    std::cout << "[RECOVERY] Client " << it->first << " marked as ALIVE\n";
+                }
                 c.heartbeat = true;
             }
         }
@@ -285,7 +292,7 @@ int main()
     //     res.set_content(json_str, "application/json");
     // });
 
-                svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
+                    svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
 
         json arr = json::array();
 
@@ -313,6 +320,27 @@ int main()
                     {"log", com_info.log}  // Add log
                 };
             }
+            
+            // Convert file_info to JSON
+            std::string file_status_str;
+            switch (c.file_info.status) {
+                case FileStatus::NOT_FOUND:     file_status_str = "not_found";     break;
+                case FileStatus::FOUND:         file_status_str = "found";         break;
+                case FileStatus::COPYING:       file_status_str = "copying";       break;
+                case FileStatus::COPY_COMPLETE: file_status_str = "copy_complete"; break;
+                case FileStatus::COPY_FAILED:   file_status_str = "copy_failed";   break;
+                default:                        file_status_str = "unknown";       break;
+            }
+            
+            json file_info_json = {
+                {"status", file_status_str},
+                {"total_bytes", c.file_info.total_bytes},
+                {"copied_bytes", c.file_info.copied_bytes},
+                {"progress", c.file_info.progress},
+                {"speed_mbps", c.file_info.speed_mbps},
+                {"eta_seconds", c.file_info.eta_seconds},
+                {"error_msg", c.file_info.error_msg}
+            };
 
             arr.push_back({
                 {"ip", ip},
@@ -321,7 +349,8 @@ int main()
                 {"heartbeat", c.heartbeat},
                 {"installer_path", c.installer_path},
                 {"download_path", c.download_path},
-                {"comport_list", comport_json}
+                {"comport_list", comport_json},
+                {"file_info", file_info_json}
             });
         }
 

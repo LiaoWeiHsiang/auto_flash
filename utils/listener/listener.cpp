@@ -358,13 +358,90 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
             break;
         }
 
-        case MSG_DOWNLOAD_PATH:
+                case MSG_DOWNLOAD_PATH:
         {
             std::string download_path_(data.begin(), data.end());
             download_path = download_path_;
             auto& c = clients_map[ip];  // auto-create if not exist
             c.download_path = download_path_;
             std::cout << "[MSG_DOWNLOAD_PATH] " << download_path << std::endl;
+            fflush(stdout);
+            break;
+        }
+
+                case MSG_FILE_STATUS:
+        {
+            std::cout << "[MSG_FILE_STATUS] Get" << std::endl;
+            
+            if (length < 44) {  // Minimum size without error message
+                std::cout << "[MSG_FILE_STATUS] Invalid length" << std::endl;
+                break;
+            }
+            
+            FileInfo info;
+            size_t offset = 0;
+            
+            // Status (4 bytes)
+            int status_int;
+            memcpy(&status_int, data.data() + offset, sizeof(int));
+            info.status = static_cast<FileStatus>(status_int);
+            offset += sizeof(int);
+            
+            // Total bytes (8 bytes)
+            memcpy(&info.total_bytes, data.data() + offset, sizeof(uint64_t));
+            offset += sizeof(uint64_t);
+            
+            // Copied bytes (8 bytes)
+            memcpy(&info.copied_bytes, data.data() + offset, sizeof(uint64_t));
+            offset += sizeof(uint64_t);
+            
+            // Progress (8 bytes)
+            memcpy(&info.progress, data.data() + offset, sizeof(double));
+            offset += sizeof(double);
+            
+            // Speed (8 bytes)
+            memcpy(&info.speed_mbps, data.data() + offset, sizeof(double));
+            offset += sizeof(double);
+            
+            // ETA (4 bytes)
+            memcpy(&info.eta_seconds, data.data() + offset, sizeof(int));
+            offset += sizeof(int);
+            
+            // Error message length (4 bytes)
+            uint32_t error_len;
+            memcpy(&error_len, data.data() + offset, sizeof(uint32_t));
+            offset += sizeof(uint32_t);
+            
+            // Error message
+            if (offset + error_len <= length) {
+                info.error_msg = std::string(data.data() + offset, error_len);
+            }
+            
+            auto& c = clients_map[ip];
+            c.file_info = info;
+            
+            std::cout << "[FILE_STATUS] Status: " << (int)info.status << std::endl;
+            std::cout << "[FILE_STATUS] Progress: " << info.progress << "%" << std::endl;
+            std::cout.flush();
+            break;
+        }
+
+        case MSG_CLIENT_INSTALLER_PATH:
+        {
+            std::string client_installer_path(data.begin(), data.end());
+            auto& c = clients_map[ip];
+            c.installer_path = client_installer_path;
+            std::cout << "[MSG_CLIENT_INSTALLER_PATH] " << client_installer_path << std::endl;
+            fflush(stdout);
+            break;
+        }
+
+        case MSG_CLIENT_DOWNLOAD_PATH:
+        {
+            std::string client_download_path(data.begin(), data.end());
+            auto& c = clients_map[ip];
+            c.download_path = client_download_path;
+            std::cout << "[MSG_CLIENT_DOWNLOAD_PATH] " << client_download_path << std::endl;
             fflush(stdout);
             break;
         }

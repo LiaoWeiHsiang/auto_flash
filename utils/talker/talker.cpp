@@ -40,6 +40,20 @@ bool Talker::connect_server()
     sock_ = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_ < 0) return false;
 
+    // 🔧 設置發送超時 (5 秒)
+    struct timeval tv;
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    
+#ifdef _WIN32
+    DWORD timeout = 5000;  // 5 seconds in milliseconds
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#endif
+
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port_);
