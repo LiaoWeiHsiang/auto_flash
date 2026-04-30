@@ -285,7 +285,7 @@ int main()
     //     res.set_content(json_str, "application/json");
     // });
 
-    svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
+        svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
 
         json arr = json::array();
 
@@ -293,13 +293,33 @@ int main()
 
         for (auto& [ip, c] : listener.clients_map)
         {
+            // Convert comport_list to JSON
+            json comport_json = json::object();
+            for (const auto& [com_num, com_info] : c.comport_list)
+            {
+                std::string status_str;
+                switch (com_info.status) {
+                    case ComportStatus::PENDING:  status_str = "pending";  break;
+                    case ComportStatus::FLASHING: status_str = "flashing"; break;
+                    case ComportStatus::SUCCESS:  status_str = "success";  break;
+                    case ComportStatus::FAIL:     status_str = "fail";     break;
+                    default:                      status_str = "unknown";  break;
+                }
+                
+                comport_json[std::to_string(com_num)] = {
+                    {"number", com_num},
+                    {"status", status_str}
+                };
+            }
+
             arr.push_back({
                 {"ip", ip},
                 {"device", c.device_name},
                 {"auto_flash", c.server_get_auto_flash_status},
                 {"heartbeat", c.heartbeat},
                 {"installer_path", c.installer_path},
-                {"download_path", c.download_path}
+                {"download_path", c.download_path},
+                {"comport_list", comport_json}
             });
         }
 

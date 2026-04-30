@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <atomic>
 #include <chrono>
+#include <unordered_map>
 
 enum MsgType {
     MSG_HEART_BEAT,
@@ -26,6 +27,18 @@ enum class FlashType {
     HLOS
 };
 
+enum class ComportStatus{
+    PENDING,
+    FLASHING,
+    FAIL,
+    SUCCESS
+};
+
+struct ComportInfo {
+    int number;
+    ComportStatus status = ComportStatus::PENDING;
+};
+
 struct ClientInfo {
     std::string device_name;
     bool heartbeat = false;
@@ -34,4 +47,5 @@ struct ClientInfo {
     std::atomic<bool> auto_flash;
     std::string installer_path;
     std::string download_path;
+    std::unordered_map<int, ComportInfo> comport_list;
 };

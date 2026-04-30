@@ -260,12 +260,18 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
 
         case MSG_COMPORT:
         {
-            if (length >= sizeof(int)) {
-                int port;
-                memcpy(&port, data.data(), sizeof(int));
-
-                std::cout << "[COMPORT] " << port << std::endl;
+            std::cout << "[MSG_COMPORT] Get" << std::endl;
+            if (length >= sizeof(ComportInfo)) {
+                // int port;
+                ComportInfo info;
+                auto& c = clients_map[ip];
+                memcpy(&info, data.data(), sizeof(info));
+                c.comport_list[info.number] = info;
+                std::cout << "[COMPORT] " << info.number << std::endl;
+                std::cout << "[COMPORT] Status: " << (int)info.status << std::endl;
                 std::cout.flush();
+            }else{
+                std::cout << "[MSG_COMPORT] Invalid length: " << length << std::endl;
             }
             break;
         }

@@ -57,6 +57,8 @@ bool get_comport_9008(int& out_com)
 
 bool get_all_9008_comports(std::vector<int>& out_coms)
 {
+    out_coms.clear();
+
     HDEVINFO hDevInfo = SetupDiGetClassDevs(
         &GUID_DEVCLASS_PORTS,
         NULL,
@@ -94,15 +96,12 @@ bool get_all_9008_comports(std::vector<int>& out_coms)
 
                 if (std::regex_search(name, match, r))
                 {
-                    int com = std::stoi(match[1]);
-                    out_coms.push_back(com);
-
-                    // std::cout << "[FOUND] " << name << std::endl;
+                    out_coms.push_back(std::stoi(match[1]));
                 }
             }
         }
     }
 
     SetupDiDestroyDeviceInfoList(hDevInfo);
-    return !out_coms.empty();
+    return true;
 }

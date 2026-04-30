@@ -40,7 +40,7 @@ bool run_emmcdl(const std::string& folder,
         std::cout << s;
         if (log_file.is_open()) {
             log_file << s;
-            log_file.flush();   // ✅ 即時寫入
+            log_file.flush();
         }
     };
 
@@ -215,20 +215,54 @@ void flash_worker(const std::string& folder, int comport)
 {
     std::cout << "[FLASH] Start flashing SPINOR COM" << comport << "\n";
 
+    bool spinor_success = false;
+    bool hlos_success = false;
+
+    // ===== Flash SPINOR =====
     if (flash_image(folder, comport, FlashType::SPINOR) != 0) {
         std::cerr << "Flash SPINOR FAILED\n";
+        
+        // Update status to FAIL
+        {
+            std::lock_guard<std::mutex> lock(com_mutex);
+            if (comport_map.find(comport) != comport_map.end()) {
+                comport_map[comport].status = ComportStatus::FAIL;
+                std::cout << "[FLASH] COM" << comport << " status updated to [FAIL]\n";
+            }
+        }
         return;
     }
 
     std::cout << "Flash SPINOR SUCCESS\n";
+    spinor_success = true;
     Sleep(1000);
 
+    // ===== Flash HLOS =====
     std::cout << "[FLASH] Start flashing HLOS COM" << comport << "\n";
 
     if (flash_image(folder, comport, FlashType::HLOS) != 0) {
         std::cerr << "Flash HLOS FAILED\n";
+        
+        // Update status to FAIL
+        {
+            std::lock_guard<std::mutex> lock(com_mutex);
+            if (comport_map.find(comport) != comport_map.end()) {
+                comport_map[comport].status = ComportStatus::FAIL;
+                std::cout << "[FLASH] COM" << comport << " status updated to [FAIL]\n";
+            }
+        }
         return;
     }
 
     std::cout << "Flash HLOS SUCCESS\n";
+    hlos_success = true;
+
+    // ===== Both succeeded =====
+    if (spinor_success && hlos_success) {
+        std::lock_guard<std::mutex> lock(com_mutex);
+        if (comport_map.find(comport) != comport_map.end()) {
+            comport_map[comport].status = ComportStatus::SUCCESS;
+            std::cout << "[FLASH] COM" << comport << " completed successfully [SUCCESS]\n";
+        }
+    }
 }

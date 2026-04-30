@@ -12,11 +12,12 @@
 
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <mutex>
 #include <condition_variable>
 
 std::queue<int> new_com_queue;
-std::set<int> seen_comports;
+std::unordered_map<int, ComportInfo> comport_map;  // COM number -> ComportInfo
 std::vector<int> current_coms;
 
 std::mutex com_mutex;
@@ -259,11 +260,13 @@ void com_monitor(const std::string& ip, Listener* listener)
     int copy_conuter = 0;
     std::string msg = "Heart Beat!!!";
     Talker talker(ip, 9000);
+    auto last_print_time = std::chrono::steady_clock::now();
     while (true)
     {
         std::vector<int> current_coms;
         std::set<int> current_set;
 
+        // ===== Scan current COMs =====
         if (get_all_9008_comports(current_coms))
         {
             current_set.insert(current_coms.begin(), current_coms.end());
@@ -271,20 +274,64 @@ void com_monitor(const std::string& ip, Listener* listener)
             {
                 std::lock_guard<std::mutex> lock(com_mutex);
 
+                // ===== New COM detection =====
                 for (int com : current_set)
                 {
-                    if (seen_comports.insert(com).second) {
-                        new_com_queue.push(com);
-                        std::cout << "[EVENT] New COM detected: COM" << com << "\n";
-                        com_cv.notify_one();
+                    // Check if this COM is new (not in comport_map)
+                    if (comport_map.find(com) == comport_map.end())
+                    {
+                        // Create new ComportInfo with PENDING status
+                        ComportInfo info;
+                        info.number = com;
+                        info.status = ComportStatus::PENDING;
+                        comport_map[com] = info;
+
+                        // check if already in queue
+                        bool already_in_queue = false;
+                        {
+                            std::queue<int> tmp = new_com_queue;  // copy to avoid locking too long
+                            while (!tmp.empty()) {
+                                if (tmp.front() == com) {
+                                    already_in_queue = true;
+                                    break;
+                                }
+                                tmp.pop();
+                            }
+                        }
+
+                        // if not in queue, push to queue and notify
+                        if (!already_in_queue)
+                        {
+                            new_com_queue.push(com);
+                            std::cout << "[EVENT] New COM detected: COM" << com << " [PENDING]\n";
+                            std::cout << "[QUEUE ] new_com_queue: ";
+                            std::queue<int> dump = new_com_queue;
+                            if (dump.empty()) {
+                                std::cout << "(empty)";
+                            } else {
+                                while (!dump.empty()) {
+                                    std::cout << "COM" << dump.front() << " ";
+                                    dump.pop();
+                                }
+                            }
+                            std::cout << std::endl;
+
+                            com_cv.notify_one();
+                        }
+                        else
+                        {
+                            std::cout << "[SKIP ] COM" << com
+                                    << " already in new_com_queue\n";
+                        }
                     }
                 }
 
-                for (auto it = seen_comports.begin(); it != seen_comports.end(); )
+                // ===== Removed COM detection =====
+                for (auto it = comport_map.begin(); it != comport_map.end(); )
                 {
-                    if (current_set.find(*it) == current_set.end()) {
-                        std::cout << "[EVENT] COM removed: COM" << *it << "\n";
-                        it = seen_comports.erase(it);
+                    if (current_set.find(it->first) == current_set.end()) {
+                        std::cout << "[EVENT] COM removed: COM" << it->first << "\n";
+                        it = comport_map.erase(it);
                     } else {
                         ++it;
                     }
@@ -292,6 +339,49 @@ void com_monitor(const std::string& ip, Listener* listener)
             }
         }
 
+
+        
+        // print logs
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(
+                now - last_print_time).count() >= 60)
+        {
+            std::lock_guard<std::mutex> lock(com_mutex);
+
+            // ===== print current Scan =====
+            std::cout << "[SCAN ] get_all_9008_comports: ";
+            if (current_set.empty()) {
+                std::cout << "(none)";
+            } else {
+                for (int com : current_set) {
+                    std::cout << "COM" << com << " ";
+                }
+            }
+            std::cout << std::endl;
+
+            // ===== Print current comport_map =====
+            std::cout << "[STATE] comport_map:             ";
+            if (comport_map.empty()) {
+                std::cout << "(none)";
+            } else {
+                for (const auto& [com, info] : comport_map) {
+                    const char* status_str = "UNKNOWN";
+                    switch (info.status) {
+                        case ComportStatus::PENDING:  status_str = "PENDING";  break;
+                        case ComportStatus::FLASHING: status_str = "FLASHING"; break;
+                        case ComportStatus::SUCCESS:  status_str = "SUCCESS";  break;
+                        case ComportStatus::FAIL:     status_str = "FAIL";     break;
+                    }
+                    std::cout << "COM" << com << "[" << status_str << "] ";
+                }
+            }
+            std::cout << std::endl;
+
+            last_print_time = now;
+        }
+
+
+        // ===== Send heartbeat to server =====
         std::string device_name = get_device_name();
 
         if (!talker.send_msg(MSG_HEART_BEAT,
@@ -301,6 +391,30 @@ void com_monitor(const std::string& ip, Listener* listener)
             std::cout << "[Send failed] MSG_HEART_BEAT\n";
         }
 
+        // ===== Send COM ports status to server =====
+        {
+            std::lock_guard<std::mutex> lock(com_mutex);
+            for (const auto& [com, info] : comport_map)
+            {
+                if (!talker.send_msg(MSG_COMPORT, &info, sizeof(ComportInfo)))
+                {
+                    std::cout << "[Send failed] MSG_COMPORT COM" << com << "\n";
+                }
+                else
+                {
+                    const char* status_str = "UNKNOWN";
+                    switch (info.status) {
+                        case ComportStatus::PENDING:  status_str = "PENDING";  break;
+                        case ComportStatus::FLASHING: status_str = "FLASHING"; break;
+                        case ComportStatus::SUCCESS:  status_str = "SUCCESS";  break;
+                        case ComportStatus::FAIL:     status_str = "FAIL";     break;
+                    }
+                    std::cout << "[Send success] MSG_COMPORT COM" << com << " [" << status_str << "]\n";
+                }
+            }
+        }
+
+        // ===== Send auto_flash status to server =====
         auto_flash = listener->auto_flash();
         if (!talker.send_msg(MSG_AUTO_FLASH_STATUS,
                             &auto_flash,
@@ -310,6 +424,7 @@ void com_monitor(const std::string& ip, Listener* listener)
         }
         
 
+        // ===== Check if need to copy installer =====
         if (auto_flash )
         {
             if(copy_conuter%5==0){
@@ -374,9 +489,7 @@ int main(int argc, char* argv[])
 
 
     std::thread com_monitor_thread(com_monitor,ip, &listener);
-    com_monitor_thread.detach();
-    std::string folder = "C:\\workspace\\Glymur\\r4900\\Installer";
-    
+    com_monitor_thread.detach();    
 
     
 
@@ -400,18 +513,25 @@ int main(int argc, char* argv[])
                     comport = new_com_queue.front();
                     new_com_queue.pop();
                 }
-                // check validity
-                if (seen_comports.find(comport) != seen_comports.end())
-                {            
-                    std::cout << "[MAIN] Start flashing COM" << comport << "\n";
-                    std::thread flash_thread(
-                        flash_worker,
-                        listener.installer_path,
-                        comport
-                    );
-                    flash_thread.detach();
-                }else{
-                    std::cout << "[SKIP] COM not in seen_comports: " << comport << "\n";
+                                // check validity and update status to FLASHING
+                {
+                    std::lock_guard<std::mutex> lock(com_mutex);
+                    if (comport_map.find(comport) != comport_map.end())
+                    {
+                        comport_map[comport].status = ComportStatus::FLASHING;
+                        std::cout << "[MAIN] Start flashing COM" << comport << " [FLASHING]\n";
+                        
+                        std::thread flash_thread(
+                            flash_worker,
+                            listener.installer_path,
+                            comport
+                        );
+                        flash_thread.detach();
+                    }
+                    else
+                    {
+                        std::cout << "[SKIP] COM not in comport_map: " << comport << "\n";
+                    }
                 }
             }
         }
