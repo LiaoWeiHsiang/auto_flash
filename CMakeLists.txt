@@ -47,12 +47,25 @@ set(COMMON_LIBS
 
 # ===== auto_flash =====
 if (BUILD_AUTO_FLASH)
-    add_executable(auto_flash
+    set(AUTO_FLASH_SOURCES
         auto_flash/auto_flash.cpp
         utils/talker/talker.cpp
         utils/socket/socket.cpp
         utils/listener/listener.cpp
+        utils/zip/unzip.cpp
         ${COMMON_SOURCES}
+    )
+
+    # VERSIONINFO + manifest resource: unsigned MinGW binaries with no
+    # version/company metadata are a common Defender ML heuristic false
+    # positive trigger, on top of the -static link below.
+    if (WIN32)
+        enable_language(RC)
+        list(APPEND AUTO_FLASH_SOURCES auto_flash/version.rc)
+    endif()
+
+    add_executable(auto_flash
+        ${AUTO_FLASH_SOURCES}
     )
 
     target_include_directories(auto_flash PRIVATE

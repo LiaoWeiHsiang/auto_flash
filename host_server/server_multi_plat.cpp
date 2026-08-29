@@ -64,6 +64,9 @@ constexpr int HTTP_PORT = 8080;
 void set_auto_flash(const std::string& auto_flash,
                     const std::string& installer_path,
                     const std::string& download_path,
+                    Chipset chipset,
+                    StorageType storage,
+                    FlashStage flash_stage,
                     const std::string& ip)
 {
     std::cout << "Send message from server\n";
@@ -106,6 +109,34 @@ void set_auto_flash(const std::string& auto_flash,
         }
     }else{
         std::cout << "download path is empty. Can't Send\n";
+    }
+
+    // ===== chipset / storage (always sent; they always have a valid value) =====
+    int chipset_value = static_cast<int>(chipset);
+    if (!talker.send_msg(MSG_CHIPSET, &chipset_value, sizeof(chipset_value))){
+        std::cout << "[Send failed] MSG_CHIPSET\n";
+    }
+    else{
+        std::cout << "[Send successful] MSG_CHIPSET: "
+                  << chipset_to_string(chipset) << std::endl;
+    }
+
+    int storage_value = static_cast<int>(storage);
+    if (!talker.send_msg(MSG_STORAGE, &storage_value, sizeof(storage_value))){
+        std::cout << "[Send failed] MSG_STORAGE\n";
+    }
+    else{
+        std::cout << "[Send successful] MSG_STORAGE: "
+                  << storage_to_string(storage) << std::endl;
+    }
+
+    int stage_value = static_cast<int>(flash_stage);
+    if (!talker.send_msg(MSG_FLASH_STAGE, &stage_value, sizeof(stage_value))){
+        std::cout << "[Send failed] MSG_FLASH_STAGE\n";
+    }
+    else{
+        std::cout << "[Send successful] MSG_FLASH_STAGE: "
+                  << stage_to_string(flash_stage) << std::endl;
     }
 }
 
@@ -256,6 +287,11 @@ private:
 // ===================== MAIN =====================
 int main()
 {
+    // 🔧 禁用 stdout 緩衝，讓 log 即時輸出
+    std::cout.setf(std::ios::unitbuf);
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
     int listen_port = 9000;
     Listener listener(listen_port);
     listener.start();
@@ -294,11 +330,51 @@ int main()
 
                     svr.Get("/clients", [&](const httplib::Request&, httplib::Response& res) {
 
+        // ⚠️ 鎖內只做淺複製，JSON 組裝（尤其是每個 comport 的 log，最多
+        // 50KB）搬到鎖外做。這個 handler 每 500ms 被 Web UI 打一次，若在
+        // clients_mutex 持鎖期間做大量字串/JSON 工作，會讓 client 端的
+        // MSG_HEART_BEAT dispatch（唯一會等這把鎖的訊息）延遲，進而讓
+        // handle_client 的 recv 迴圈跟著卡住、TCP 接收緩衝區塞滿，client
+        // 端的 send() 被流量控制阻塞好幾秒，heartbeat 因此被判 DEAD。
+        struct ClientSnapshot {
+            std::string ip;
+            std::string device_name;
+            bool auto_flash;
+            bool heartbeat;
+            std::string installer_path;
+            std::string download_path;
+            Chipset chipset;
+            StorageType storage;
+            FlashStage flash_stage;
+            std::unordered_map<int, ComportInfo> comport_list;
+            FileInfo file_info;
+        };
+
+        std::vector<ClientSnapshot> snapshots;
+        {
+            std::lock_guard<std::mutex> lock(listener.clients_mutex);
+            snapshots.reserve(listener.clients_map.size());
+            for (auto& [ip, c] : listener.clients_map)
+            {
+                ClientSnapshot snap;
+                snap.ip = ip;
+                snap.device_name = c.device_name;
+                snap.auto_flash = c.auto_flash.load();
+                snap.heartbeat = c.heartbeat;
+                snap.installer_path = c.installer_path;
+                snap.download_path = c.download_path;
+                snap.chipset = c.chipset;
+                snap.storage = c.storage;
+                snap.flash_stage = c.flash_stage;
+                snap.comport_list = c.comport_list;  // COW/深拷貝，但不做 JSON 工作
+                snap.file_info = c.file_info;
+                snapshots.push_back(std::move(snap));
+            }
+        }
+
         json arr = json::array();
 
-        std::lock_guard<std::mutex> lock(listener.clients_mutex);
-
-        for (auto& [ip, c] : listener.clients_map)
+        for (auto& c : snapshots)
         {
             // Convert comport_list to JSON
             json comport_json = json::object();
@@ -313,25 +389,29 @@ int main()
                     case ComportStatus::REMOVED:  continue;  // Skip removed ports
                     default:                      status_str = "unknown";  break;
                 }
-                
+
                 comport_json[std::to_string(com_num)] = {
                     {"number", com_num},
                     {"status", status_str},
-                    {"log", com_info.log}  // Add log
+                    {"log", com_info.log},  // Add log
+                    {"error_msg", com_info.error_msg}
                 };
             }
-            
+
             // Convert file_info to JSON
             std::string file_status_str;
             switch (c.file_info.status) {
-                case FileStatus::NOT_FOUND:     file_status_str = "not_found";     break;
-                case FileStatus::FOUND:         file_status_str = "found";         break;
-                case FileStatus::COPYING:       file_status_str = "copying";       break;
-                case FileStatus::COPY_COMPLETE: file_status_str = "copy_complete"; break;
-                case FileStatus::COPY_FAILED:   file_status_str = "copy_failed";   break;
-                default:                        file_status_str = "unknown";       break;
+                case FileStatus::NOT_FOUND:          file_status_str = "not_found";          break;
+                case FileStatus::FOUND:              file_status_str = "found";              break;
+                case FileStatus::COPYING:            file_status_str = "copying";            break;
+                case FileStatus::COPY_COMPLETE:      file_status_str = "copy_complete";      break;
+                case FileStatus::COPY_FAILED:        file_status_str = "copy_failed";        break;
+                case FileStatus::PATH_NOT_A_FOLDER:  file_status_str = "path_not_a_folder";  break;
+                case FileStatus::WAITING_FOR_COPY:   file_status_str = "waiting_for_copy";   break;
+                case FileStatus::MISSING_FILES:      file_status_str = "missing_files";      break;
+                default:                             file_status_str = "unknown";            break;
             }
-            
+
             json file_info_json = {
                 {"status", file_status_str},
                 {"total_bytes", c.file_info.total_bytes},
@@ -343,12 +423,15 @@ int main()
             };
 
             arr.push_back({
-                {"ip", ip},
+                {"ip", c.ip},
                 {"device", c.device_name},
-                {"auto_flash", c.server_get_auto_flash_status},
+                {"auto_flash", c.auto_flash},
                 {"heartbeat", c.heartbeat},
                 {"installer_path", c.installer_path},
                 {"download_path", c.download_path},
+                {"chipset", chipset_to_string(c.chipset)},
+                {"storage", storage_to_string(c.storage)},
+                {"flash_stage", stage_to_string(c.flash_stage)},
                 {"comport_list", comport_json},
                 {"file_info", file_info_json}
             });
@@ -380,11 +463,40 @@ int main()
         if (j.contains("download_path") && !j["download_path"].get<std::string>().empty())
             c.download_path = j["download_path"];
 
+        if (j.contains("chipset") && !j["chipset"].get<std::string>().empty())
+            c.chipset = chipset_from_string(j["chipset"]);
+
+        if (j.contains("storage") && !j["storage"].get<std::string>().empty())
+            c.storage = storage_from_string(j["storage"]);
+
+        if (j.contains("flash_stage") && !j["flash_stage"].get<std::string>().empty())
+            c.flash_stage = stage_from_string(j["flash_stage"]);
+
+        // Hamoa / Glymur are NVME only. Clamp here too, not just in the UI —
+        // /send can be POSTed by anything.
+        c.storage = clamp_storage(c.chipset, c.storage);
+
         // ===== send command (ONLY ON CHANGE OR ALWAYS OK) =====
+        // Copy out of `c` before calling: set_auto_flash() takes these by
+        // const&, and Talker's connect() inside it blocks long enough for
+        // the client's own heartbeat thread (MSG_CLIENT_INSTALLER_PATH /
+        // MSG_CLIENT_DOWNLOAD_PATH) to overwrite clients_map[ip] with its
+        // stale value first — sending back exactly what we just tried to
+        // change. Local copies break that aliasing.
+        std::string auto_flash_str = std::to_string(c.server_get_auto_flash_status);
+        std::string installer_path_copy = c.installer_path;
+        std::string download_path_copy = c.download_path;
+        Chipset chipset_copy = c.chipset;
+        StorageType storage_copy = c.storage;
+        FlashStage flash_stage_copy = c.flash_stage;
+
         set_auto_flash(
-            std::to_string(c.server_get_auto_flash_status),
-            c.installer_path,
-            c.download_path,
+            auto_flash_str,
+            installer_path_copy,
+            download_path_copy,
+            chipset_copy,
+            storage_copy,
+            flash_stage_copy,
             target_ip
         );
 

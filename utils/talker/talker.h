@@ -30,7 +30,9 @@
 class Talker
 {
 public:
-    Talker(const std::string& ip, int port);
+    // timeout_sec：send/recv 逾時秒數。heartbeat 這種高頻小封包應該用短逾時，
+    // 這樣即使對端一時沒在讀，也能很快失敗重試，不會拖累存活判定的時間窗。
+    Talker(const std::string& ip, int port, int timeout_sec = 30);
 
     bool connect_server();
     bool ensure_connected();
@@ -40,5 +42,7 @@ public:
 private:
     std::string ip_;
     int port_;
+    int timeout_sec_;
     socket_t sock_;
+    bool connected_ = false;  // socket_t 在 Windows 上是無號型別，sock_ >= 0 恒真，不能拿來判斷是否已連線
 };

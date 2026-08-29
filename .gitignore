@@ -1,1 +1,6 @@
 *build*/
+
+# 外部 clone 的 skills repo（mattpocock/skills），有自己的 .git
+skills/
+
+__pycache__/

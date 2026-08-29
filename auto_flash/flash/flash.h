@@ -12,6 +12,24 @@
 extern std::unordered_map<int, ComportInfo> comport_map;
 extern std::mutex com_mutex;
 
-bool run_emmcdl(const std::string& folder, int comport, FlashType flash_type);
-BOOL flash_image(const std::string& folder, int comport, FlashType flash_type);
-void flash_worker(const std::string& folder, int comport);
+// out_reason（若非 nullptr）在失敗時會被寫入具體原因，供上層回報給 UI。
+bool run_emmcdl(const std::string& folder,
+                int comport,
+                FlashType flash_type,
+                std::atomic<bool>& flash_alive,
+                Chipset chipset = Chipset::KENAI,
+                StorageType storage = StorageType::NVME,
+                std::string* out_reason = nullptr);
+
+BOOL flash_image(const std::string& folder,
+                 int comport,
+                 FlashType flash_type,
+                 Chipset chipset = Chipset::KENAI,
+                 StorageType storage = StorageType::NVME,
+                 std::string* out_reason = nullptr);
+
+void flash_worker(const std::string& folder,
+                  int comport,
+                  Chipset chipset = Chipset::KENAI,
+                  StorageType storage = StorageType::NVME,
+                  FlashStage flash_stage = FlashStage::BOTH);

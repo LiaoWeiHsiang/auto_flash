@@ -32,6 +32,9 @@ public:
     int heart_beat_count = 0;
     std::string installer_path = "";
     std::string download_path = "";
+    Chipset chipset = Chipset::KENAI;
+    StorageType storage = StorageType::NVME;
+    FlashStage flash_stage = FlashStage::BOTH;
     std::vector<std::string> client_ip_list;
     std::unordered_map<std::string, ClientInfo> clients_map;
     std::mutex clients_mutex;

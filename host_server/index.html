@@ -48,7 +48,7 @@ body {
 }
 
 .container {
-  max-width: 1400px;
+  max-width: 1800px;
   margin: 0 auto;
 }
 
@@ -178,8 +178,8 @@ input:checked + .slider:before {
 
 .client-row {
   display: grid;
-  grid-template-columns: 40px 160px 140px 100px 100px 80px 1fr 1fr;
-  gap: 16px;
+  grid-template-columns: 40px 145px 125px 90px 85px 65px 110px 105px 140px minmax(0, 1.1fr) minmax(0, 1.1fr);
+  gap: 10px;
   padding: 20px 24px;
   align-items: center;
   cursor: pointer;
@@ -567,6 +567,24 @@ input:checked + .slider:before {
   content: "⚠️";
 }
 
+.file-status-path-error {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  color: #92400e;
+}
+
+.file-status-path-error::before {
+  content: "⚠️";
+}
+
+.file-status-waiting {
+  background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+  color: #5b21b6;
+}
+
+.file-status-waiting::before {
+  content: "⏳";
+}
+
 .progress-bar-container {
   width: 100%;
   height: 28px;
@@ -616,6 +634,7 @@ input:checked + .slider:before {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;   /* 讓 grid 欄可以縮小，內容才不會被截斷 */
 }
 
 .path-label {
@@ -636,7 +655,8 @@ input:checked + .slider:before {
   background: var(--bg-primary);
   transition: all 0.2s ease;
   width: 100%;
-  min-width: 200px;
+  min-width: 0;      /* 允許在 grid 內縮小，避免撐破欄位造成截斷 */
+  box-sizing: border-box;
 }
 
 .path-input:focus {
@@ -647,6 +667,34 @@ input:checked + .slider:before {
 
 .path-input::placeholder {
   color: var(--text-tertiary);
+}
+
+.select-input {
+  padding: 10px 12px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-family: 'Fira Code', monospace;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  transition: all 0.2s ease;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.select-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.select-input:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .path-display-row {
@@ -755,13 +803,44 @@ function renderClientsOnce(clients) {
       </label>
 
       <div class="path-input-group" onclick="event.stopPropagation()">
+        <div class="path-label">🔧 Chipset</div>
+        <select class="chipset select-input"
+                onchange="onChipsetChange('${c.ip}')">
+          <option value="kenai">Kenai</option>
+          <option value="hamoa">Hamoa</option>
+          <option value="glymur">Glymur</option>
+        </select>
+      </div>
+
+      <div class="path-input-group" onclick="event.stopPropagation()">
+        <div class="path-label">💽 Storage</div>
+        <select class="storage select-input"
+                onchange="sendChipsetStorage('${c.ip}')">
+          <option value="nvme">NVME</option>
+          <option value="ufs">UFS</option>
+        </select>
+      </div>
+
+      <div class="path-input-group" onclick="event.stopPropagation()">
+        <div class="path-label">⚡ Stage</div>
+        <select class="stage select-input"
+                onchange="sendChipsetStorage('${c.ip}')">
+          <option value="both">SPINOR + HLOS</option>
+          <option value="spinor_only">SPINOR only</option>
+          <option value="hlos_only">HLOS only</option>
+        </select>
+      </div>
+
+      <div class="path-input-group" onclick="event.stopPropagation()">
         <div class="path-label">📁 Installer Path</div>
-        <input class="installer path-input" placeholder="Enter installer path..." value="">
+        <input class="installer path-input" placeholder="Enter installer path..." value=""
+               onblur="sendPathsOnly('${c.ip}')">
       </div>
 
       <div class="path-input-group" onclick="event.stopPropagation()">
         <div class="path-label">💾 Download Path</div>
-        <input class="download path-input" placeholder="Enter download path..." value="">
+        <input class="download path-input" placeholder="Enter download path..." value=""
+               onblur="sendPathsOnly('${c.ip}')">
       </div>
     `;
 
@@ -851,6 +930,18 @@ function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
       statusBadgeClass = 'file-status-failed';
       statusText = 'FAILED';
       break;
+    case 'path_not_a_folder':
+      statusBadgeClass = 'file-status-path-error';
+      statusText = 'PATH NOT A FOLDER';
+      break;
+    case 'waiting_for_copy':
+      statusBadgeClass = 'file-status-waiting';
+      statusText = 'WAITING FOR COPY';
+      break;
+    case 'missing_files':
+      statusBadgeClass = 'file-status-failed';
+      statusText = 'MISSING FILES';
+      break;
     default:
       statusBadgeClass = 'file-status-not-found';
       statusText = 'UNKNOWN';
@@ -893,11 +984,78 @@ function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
         <span>${etaMin}m ${etaSec}s</span>
       </div>
     `;
-  } else if (fileInfo.status === 'copy_failed' && fileInfo.error_msg) {
+  } else if (fileInfo.status === 'copy_failed') {
+    const errText = fileInfo.error_msg || 'Unknown error';
     html += `
-      <div class="file-status-item" style="color: #721c24;">
-        <span>❌ Error:</span>
-        <span>${escapeHtml(fileInfo.error_msg)}</span>
+      <div class="file-status-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+        <span style="font-weight:600; color:#991b1b;">❌ Extraction Error:</span>
+        <pre style="
+          margin: 0;
+          padding: 12px 16px;
+          background: linear-gradient(135deg, #1e293b, #0f172a);
+          color: #fca5a5;
+          border-radius: 6px;
+          font-family: 'Fira Code', 'Courier New', monospace;
+          font-size: 12px;
+          white-space: pre-wrap;
+          word-break: break-all;
+          width: 100%;
+          max-height: 200px;
+          overflow-y: auto;
+          border: 1px solid #7f1d1d;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        ">${escapeHtml(errText)}</pre>
+      </div>
+    `;
+  } else if (fileInfo.status === 'waiting_for_copy') {
+    html += `
+      <div class="file-status-item" style="color: #5b21b6; font-size: 13px;">
+        ⏳ Folder exists but <strong>emmcdl.exe</strong> not found.<br>
+        Waiting to copy/extract from download path...
+      </div>
+    `;
+  } else if (fileInfo.status === 'missing_files') {
+    const errText = fileInfo.error_msg || 'Required flash files are missing';
+    html += `
+      <div class="file-status-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+        <span style="font-weight:600; color:#991b1b;">❌ Missing Files:</span>
+        <pre style="
+          margin: 0;
+          padding: 12px 16px;
+          background: linear-gradient(135deg, #1e293b, #0f172a);
+          color: #fca5a5;
+          border-radius: 6px;
+          font-family: 'Fira Code', 'Courier New', monospace;
+          font-size: 12px;
+          white-space: pre-wrap;
+          word-break: break-all;
+          width: 100%;
+          max-height: 200px;
+          overflow-y: auto;
+          border: 1px solid #7f1d1d;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        ">${escapeHtml(errText)}</pre>
+      </div>
+    `;
+  } else if (fileInfo.status === 'path_not_a_folder') {
+    const errText = fileInfo.error_msg || 'Installer path is not a folder';
+    html += `
+      <div class="file-status-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+        <span style="font-weight:600; color:#92400e;">⚠️ Installer Path Not a Folder:</span>
+        <pre style="
+          margin: 0;
+          padding: 12px 16px;
+          background: linear-gradient(135deg, #1e293b, #0f172a);
+          color: #fde68a;
+          border-radius: 6px;
+          font-family: 'Fira Code', 'Courier New', monospace;
+          font-size: 12px;
+          white-space: pre-wrap;
+          word-break: break-all;
+          width: 100%;
+          border: 1px solid #92400e;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        ">${escapeHtml(errText)}</pre>
       </div>
     `;
   } else if (fileInfo.status === 'copy_complete' || fileInfo.status === 'found') {
@@ -982,24 +1140,27 @@ function updateComportList(ip, comports) {
   for (const [num, info] of Object.entries(comports)) {
     const itemId = `item_${ip}_${num}`.replace(/\./g, '_');
     const statusId = `status_${ip}_${num}`.replace(/\./g, '_');
+    const errorId = `error_${ip}_${num}`.replace(/\./g, '_');
     const containerId = `logcontainer_${ip}_${num}`.replace(/\./g, '_');
     const buttonId = `logbtn_${ip}_${num}`.replace(/\./g, '_');
-    
+
     let itemElem = document.getElementById(itemId);
-    
+    const showError = info.status.toLowerCase() === 'fail' && info.error_msg;
+
     if (!itemElem) {
       // Create new item
       const isExpanded = expandedLogs.has(containerId);
       const showClass = isExpanded ? 'show' : '';
       const buttonText = isExpanded ? '👁️ Hide Log' : '👁️ Show Log';
       const statusClass = `status-${info.status.toLowerCase()}`;
-      
+
       const newItem = document.createElement('div');
       newItem.className = 'comport-item';
       newItem.id = itemId;
       newItem.innerHTML = `
         <div class="comport-number">COM${num}</div>
         <div class="comport-status ${statusClass}" id="${statusId}">${info.status}</div>
+        ${showError ? `<div id="${errorId}" style="color:#dc2626; font-size:12px; font-weight:600; width:100%;">❌ ${escapeHtml(info.error_msg)}</div>` : `<div id="${errorId}" style="display:none;"></div>`}
         <button id="${buttonId}" class="log-toggle" onclick="toggleLog('${containerId}', '${buttonId}', event)">${buttonText}</button>
         <div id="${containerId}" class="log-container ${showClass}">${escapeHtml(info.log || 'No log available')}</div>
       `;
@@ -1012,12 +1173,27 @@ function updateComportList(ip, comports) {
         statusElem.className = `comport-status ${statusClass}`;
         statusElem.textContent = info.status;
       }
-      
+
+      const errorElem = document.getElementById(errorId);
+      if (errorElem) {
+        if (showError) {
+          errorElem.style.display = '';
+          errorElem.style.color = '#dc2626';
+          errorElem.style.fontSize = '12px';
+          errorElem.style.fontWeight = '600';
+          errorElem.style.width = '100%';
+          errorElem.textContent = `❌ ${info.error_msg}`;
+        } else {
+          errorElem.style.display = 'none';
+          errorElem.textContent = '';
+        }
+      }
+
       const logElem = document.getElementById(containerId);
       if (logElem) {
         const wasAtBottom = (logElem.scrollHeight - logElem.scrollTop <= logElem.clientHeight + 50);
         logElem.textContent = info.log || 'No log available';
-        
+
         // Auto scroll to bottom if was already at bottom or if expanded
         if (expandedLogs.has(containerId) && wasAtBottom) {
           logElem.scrollTop = logElem.scrollHeight;
@@ -1097,9 +1273,11 @@ async function update() {
         autoElem.innerHTML = '<span class="auto-status auto-off">OFF</span>';
       }
 
-      // 更新開關狀態
+      // 更新開關狀態：只有在沒有 pending 時才更新，避免覆蓋使用者剛按下的值
       const toggle = row.querySelector(".toggle-switch");
-      toggle.checked = Number(c.auto_flash) === 1;
+      if (!toggle.dataset.pending) {
+        toggle.checked = Number(c.auto_flash) === 1;
+      }
 
       // --- 同步邏輯：移除「自動沿用」 ---
       const instInput = row.querySelector(".installer");
@@ -1112,6 +1290,26 @@ async function update() {
       }
       if (!dlInput.dataset.dirty && !dlInput.dataset.focus && dlInput.value === "") {
          if (c.download_path) dlInput.value = c.download_path;
+      }
+
+      // 回填 chipset / storage / stage（pending 期間不覆蓋使用者剛改的值）
+      const chipsetSel = row.querySelector(".chipset");
+      const storageSel = row.querySelector(".storage");
+      const stageSel = row.querySelector(".stage");
+      if (chipsetSel && storageSel) {
+        if (!chipsetSel.dataset.pending && c.chipset) {
+          chipsetSel.value = c.chipset;
+        }
+        if (!storageSel.dataset.pending && c.storage) {
+          storageSel.value = c.storage;
+        }
+        if (stageSel && !stageSel.dataset.pending && c.flash_stage) {
+          stageSel.value = c.flash_stage;
+        }
+        // 維持 disabled 狀態正確（回填後 chipset 可能已改變）
+        if (!chipsetSel.dataset.pending && !storageSel.dataset.pending) {
+          applyStorageOptions(row);
+        }
       }
 
       // 更新 Client 路徑顯示（常駐顯示）
@@ -1173,18 +1371,130 @@ document.addEventListener("focusout", (e) => {
   if (e.target.tagName === "INPUT") delete e.target.dataset.focus;
 });
 
+// Hamoa / Glymur 只支援 SPINOR + NVME，非 Kenai 時鎖定 storage 選單
+function applyStorageOptions(row) {
+  const chipsetSel = row.querySelector(".chipset");
+  const storageSel = row.querySelector(".storage");
+  if (!chipsetSel || !storageSel) return;
+
+  if (chipsetSel.value === "kenai") {
+    storageSel.disabled = false;
+  } else {
+    storageSel.value = "nvme";
+    storageSel.disabled = true;
+  }
+}
+
+// chipset 改變：先套用連動規則，再把兩個值一起送出
+function onChipsetChange(ip) {
+  const row = document.getElementById(`row_${ip}`);
+  if (!row) return;
+  applyStorageOptions(row);
+  sendChipsetStorage(ip);
+}
+
+async function sendChipsetStorage(ip) {
+  const row = document.getElementById(`row_${ip}`);
+  if (!row) return;
+
+  const instInput = row.querySelector(".installer");
+  const dlInput = row.querySelector(".download");
+  const chipsetSel = row.querySelector(".chipset");
+  const storageSel = row.querySelector(".storage");
+  const stageSel = row.querySelector(".stage");
+
+  // 標記 pending，避免 500ms 的輪詢在 server 確認前把選單打回舊值
+  chipsetSel.dataset.pending = "1";
+  storageSel.dataset.pending = "1";
+  stageSel.dataset.pending = "1";
+
+  // 不帶 auto_flash 欄位，理由同 sendPathsOnly：改 chipset/storage/stage
+  // 不該連帶把 auto_flash 悄悄關掉。
+  const payload = {
+    ip: ip,
+    installer_path: instInput.value,
+    download_path: dlInput.value,
+    chipset: chipsetSel.value,
+    storage: storageSel.value,
+    flash_stage: stageSel.value
+  };
+
+  console.log("Sending chipset/storage/stage:", payload);
+
+  try {
+    await fetch("/send", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    console.error("Send chipset/storage error:", e);
+  } finally {
+    delete chipsetSel.dataset.pending;
+    delete storageSel.dataset.pending;
+    delete stageSel.dataset.pending;
+  }
+}
+
+// 只送路徑（不改變 auto_flash 狀態），在 path input onblur 時呼叫
+async function sendPathsOnly(ip) {
+  const row = document.getElementById(`row_${ip}`);
+  if (!row) return;
+  const instInput = row.querySelector(".installer");
+  const dlInput = row.querySelector(".download");
+  const chipsetSel = row.querySelector(".chipset");
+  const storageSel = row.querySelector(".storage");
+  const stageSel = row.querySelector(".stage");
+
+  // 如果兩個路徑都是空的，不送
+  if (!instInput.value && !dlInput.value) return;
+
+  // 不帶 auto_flash 欄位：/send 只有在收到這個欄位時才會改動
+  // server_get_auto_flash_status，省略它才能真正做到「不改變
+  // auto_flash 狀態」，否則會用這個分頁裡 toggle 當下（可能還沒被
+  // /clients 輪詢同步過）的 DOM 狀態，把 auto_flash 悄悄關掉。
+  const payload = {
+    ip: ip,
+    installer_path: instInput.value,
+    download_path: dlInput.value,
+    chipset: chipsetSel.value,
+    storage: storageSel.value,
+    flash_stage: stageSel.value
+  };
+
+  console.log("Sending paths (onblur):", payload);
+
+  try {
+    await fetch("/send", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    console.error("Send paths error:", e);
+  }
+}
+
 async function sendConfigToCPP(ip, isChecked) {
   const row = document.getElementById(`row_${ip}`);
   const instInput = row.querySelector(".installer");
   const dlInput = row.querySelector(".download");
+  const toggle = row.querySelector(".toggle-switch");
+  const chipsetSel = row.querySelector(".chipset");
+  const storageSel = row.querySelector(".storage");
+  const stageSel = row.querySelector(".stage");
 
-  // 【核心修改】直接取目前 UI 上的值，如果是空的就傳送空字串 ""
-  // 不再使用 || c.installer_path 這種保底邏輯
+  // 設定 pending，防止 update() 在 server 確認前把 toggle 打回去
+  toggle.dataset.pending = "1";
+
   const payload = {
     ip: ip,
     auto_flash: isChecked ? "1" : "0",
-    installer_path: instInput.value, 
-    download_path: dlInput.value
+    installer_path: instInput.value,
+    download_path: dlInput.value,
+    chipset: chipsetSel.value,
+    storage: storageSel.value,
+    flash_stage: stageSel.value
   };
 
   console.log("Sending to CPP:", payload);
@@ -1197,11 +1507,13 @@ async function sendConfigToCPP(ip, isChecked) {
     });
 
     if (res.ok) {
-      // 送出成功後，我們維持 dirty=1。
-      // 這樣背景 update 就不會因為後端資料還沒更新完成，又把舊值塞回 UI
+      // 送出成功，清除 pending，讓 update() 接管
+      delete toggle.dataset.pending;
     }
   } catch (e) {
     console.error("Send error:", e);
+    // 送出失敗，也清除 pending，讓 update() 恢復正確狀態
+    delete toggle.dataset.pending;
   }
 }
 
