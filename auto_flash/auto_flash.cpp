@@ -28,6 +28,7 @@
 #include "utils/talker/talker.h"
 #include "utils/listener/listener.h"
 #include "utils/zip/unzip.h"
+#include "auto_flash/local_server.h"
 
 #include <queue>
 #include <set>
@@ -57,6 +58,22 @@ std::atomic<bool> copy_cancel{false};
 // installer/download 永久閂鎖住，之後再也不會複製（實測就是這樣卡在
 // waiting_for_copy 不動）。
 std::atomic<bool> last_copy_cancelled{false};
+
+// 磁碟空間不足的提示。
+//
+// 使用者要求「空間不夠不要變成 FAIL/ERROR，用 warning 就好」，所以這個狀況不走
+// COPY_FAILED；但 file-status 檢查每 2 秒就會依 validation 重算一次 warning_msg，
+// 光在 copy_worker 裡寫一次會立刻被蓋掉。因此把它存在這裡，由重算 warning 的地方
+// 一併附上。空字串代表目前沒有空間問題。
+// 受 file_info_mutex 保護。
+std::string g_space_note;
+
+// 上一輪是不是因為「磁碟空間不足」而收手。
+//
+// 空間不足跟「跑完卻沒改善」是兩件事:前者是環境暫時不夠用,清出空間後就會成功,
+// 所以不能計入收斂保護的無進展次數——計進去的話兩輪就閂鎖,之後即使空間清出來了
+// 也永遠不會再試,而警告文字明明寫著「會自動繼續」(實測就是卡在這)。
+std::atomic<bool> last_copy_blocked_by_space{false};
 std::atomic<bool> copy_running{false};
 std::thread copy_thread;
 
@@ -163,6 +180,11 @@ std::vector<std::string> extract_required_filenames_from_xml(const std::filesyst
 struct InstallerValidation {
     bool ok = true;
     std::vector<std::string> missing;  // 缺少的檔名（原始大小寫，供顯示用）
+
+    // 非致命：來源（資料夾／zip）本身就沒有提供的必要 XML。
+    // 目的地缺、但來源有 → 複製就能補，算 missing；兩邊都沒有 → 再抓幾次也不會
+    // 出現，列在這裡當警告，不讓 installer 卡在 FAILED（見 validate 內的說明）。
+    std::vector<std::string> warnings;
 
     // 「骨架」是否齊備：emmcdl.exe 以及這個 flash_stage 需要的 XML 本身。
     // 骨架不齊代表目的地還沒有一份可辨識的 installer（全新／空目錄／複製到
@@ -299,8 +321,23 @@ InstallerValidation validate_installer_files(const std::filesystem::path& dir,
         // 根本不該要求的檔案。
         std::filesystem::path xml_path = resolve_in(dir, index, xml_name);
         if (xml_path.empty()) {
-            result.missing.push_back(xml_name);
-            skeleton = false;
+            // 目的地沒有這份 XML，先問「來源有沒有」再決定嚴重程度：
+            //   來源有   → 複製／delta 就能補上，照舊算缺檔並觸發複製。
+            //   來源沒有 → 重抓幾次都不會出現。以前這裡一律算缺檔，收斂保護
+            //              連續兩輪沒進展後就把整個 installer 打成
+            //              COPY_FAILED，操作員只看到 FAILED 卻沒得救。
+            //              改成降級為警告：installer 仍視為就緒，但把檔名
+            //              帶到 UI 上。
+            // 來源類型無法判定時（沒給 src_dir，或路徑既不是資料夾也不是 zip）
+            // 沒有依據說「來源沒有」，維持原本的缺檔行為，不要誤放行。
+            uint64_t src_size_ignored = 0;
+            bool src_known = src_is_dir || src_is_zip;
+            if (src_known && !src_size_of(xml_name, src_size_ignored)) {
+                result.warnings.push_back(xml_name);
+            } else {
+                result.missing.push_back(xml_name);
+                skeleton = false;
+            }
             continue;
         }
 
@@ -311,6 +348,61 @@ InstallerValidation validate_installer_files(const std::filesystem::path& dir,
     result.skeleton_ok = skeleton;
     result.ok = result.missing.empty();
     return result;
+}
+
+// 把 validation.warnings 整理成一行給操作員看的警告。
+// 刻意把後果講清楚：installer 被當成就緒，但少了 XML 的那個 stage 交給 emmcdl
+// 一定會失敗，看到這行的人要自己判斷是不是選錯 stage 或指錯 download path。
+std::string format_installer_warning(const std::vector<std::string>& warnings)
+{
+    if (warnings.empty()) return "";
+
+    std::string joined;
+    for (size_t i = 0; i < warnings.size(); ++i) {
+        if (i) joined += ", ";
+        joined += warnings[i];
+    }
+    return "Source does not provide: " + joined +
+           " - installer is treated as ready, but flashing the stage that needs "
+           "this file will fail in emmcdl. Check the flash stage / download path "
+           "if this is unexpected.";
+}
+
+// 複製或解壓正在進行中。兩種來源用不同狀態顯示（COPYING / UNZIPPING），但所有
+// 「正在忙，別動它」的判斷都要同時涵蓋兩者，漏一個就會在解壓途中被當成閒置。
+inline bool is_copy_in_progress(FileStatus s)
+{
+    return s == FileStatus::COPYING || s == FileStatus::UNZIPPING;
+}
+
+// 把「缺檔」與「來源根本沒提供」兩類異常合成一行提示。
+//
+// 成功／失敗只看複製或解壓這件事有沒有做完；檔案不齊不再讓 installer 變成
+// FAILED，而是以 success + 這行 warning 呈現，操作員才知道少了什麼。
+std::string format_installer_notes(const std::vector<std::string>& missing,
+                                   const std::vector<std::string>& warnings)
+{
+    auto join = [](const std::vector<std::string>& v) {
+        std::string s;
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (i) s += ", ";
+            s += v[i];
+        }
+        return s;
+    };
+
+    std::string out;
+    if (!missing.empty()) {
+        out = "Missing " + std::to_string(missing.size()) + " required file(s): " +
+              join(missing) + ".";
+    }
+
+    std::string warn = format_installer_warning(warnings);
+    if (!warn.empty()) {
+        if (!out.empty()) out += " ";
+        out += warn;
+    }
+    return out;
 }
 
 // Helper function to send file status
@@ -358,7 +450,24 @@ void send_file_status(Talker& talker, const FileInfo& info)
     
     // Error message
     buffer.insert(buffer.end(), info.error_msg.begin(), info.error_msg.end());
-    
+
+    // Warning message length + payload（附加在最尾端）
+    // 舊版 server 讀完 error_msg 就停止解析，多出來的這段會被忽略，
+    // 所以新 client 對舊 server 依然相容。
+    uint32_t warning_len = static_cast<uint32_t>(info.warning_msg.size());
+    buffer.insert(buffer.end(),
+        reinterpret_cast<const char*>(&warning_len),
+        reinterpret_cast<const char*>(&warning_len) + sizeof(uint32_t));
+    buffer.insert(buffer.end(), info.warning_msg.begin(), info.warning_msg.end());
+
+    // File counters（再附加在最尾端，同樣是舊 server 相容的擴充）
+    buffer.insert(buffer.end(),
+        reinterpret_cast<const char*>(&info.current_file),
+        reinterpret_cast<const char*>(&info.current_file) + sizeof(int));
+    buffer.insert(buffer.end(),
+        reinterpret_cast<const char*>(&info.total_files),
+        reinterpret_cast<const char*>(&info.total_files) + sizeof(int));
+
     talker.send_msg(MSG_FILE_STATUS, buffer.data(), buffer.size());
 }
 
@@ -424,7 +533,8 @@ static constexpr int COPY_FLUSH_TIMEOUT_SEC = 15 * 60;
 bool copy_file_win32(const std::wstring& src,
                      const std::wstring& dst,
                      std::atomic<bool>* cancel,
-                     const std::function<void(uint64_t, uint64_t)>& on_progress = nullptr)
+                     const std::function<void(uint64_t, uint64_t)>& on_progress = nullptr,
+                     DWORD* out_err = nullptr)
 {
     CopyProgressState state;
     state.cancel = cancel;
@@ -509,12 +619,62 @@ bool copy_file_win32(const std::wstring& src,
         else
             std::cout << ts() << "[COPY ERROR] CopyFileEx failed: " << err << "\n";
 
+        if (out_err) *out_err = err;
         return false;
     }
 
+    if (out_err) *out_err = 0;
     return true;
 }
 #endif
+
+// 目的地所在磁碟的可用空間。取不到（路徑還不存在、查詢失敗）時回傳 false，
+// 呼叫端就當作「無從判斷」而不是「不足」，以免把好的複製攔下來。
+bool destination_free_bytes(const std::filesystem::path& dst, uint64_t& out_free)
+{
+    std::error_code ec;
+    std::filesystem::path probe = dst;
+
+    // dst 可能還沒建立，往上找第一個存在的祖先來問。
+    while (!probe.empty() && !std::filesystem::exists(probe, ec)) {
+        auto parent = probe.parent_path();
+        if (parent == probe) break;
+        probe = parent;
+    }
+    if (probe.empty()) return false;
+
+#ifdef _WIN32
+    // std::filesystem::space() 在這個 MinGW 上會回 available = (uintmax_t)-1 而且
+    // 不設 error_code——「查不到」卻裝作成功，讓空間檢查靜靜失效（實測踩到）。
+    // 用 Win32 原生 API，UNC 路徑也支援。
+    ULARGE_INTEGER avail{}, total_b{}, freeb{};
+    std::wstring wprobe = probe.wstring();
+    if (!wprobe.empty() && wprobe.back() != L'\\') wprobe += L'\\';
+    if (!GetDiskFreeSpaceExW(wprobe.c_str(), &avail, &total_b, &freeb)) return false;
+    out_free = static_cast<uint64_t>(avail.QuadPart);
+    return true;
+#else
+    auto info = std::filesystem::space(probe, ec);
+    if (ec || info.available == static_cast<uintmax_t>(-1)) return false;
+
+    out_free = static_cast<uint64_t>(info.available);
+    return true;
+#endif
+}
+
+// 空間不足的說明文字。刻意把三個數字都寫出來，操作員才知道要清出多少。
+std::string format_space_note(uint64_t need, uint64_t have)
+{
+    auto gb = [](uint64_t b) {
+        std::ostringstream o;
+        o << std::fixed << std::setprecision(2) << (b / 1024.0 / 1024.0 / 1024.0);
+        return o.str();
+    };
+    uint64_t short_by = need > have ? need - have : 0;
+    return "Not enough disk space: needs " + gb(need) + " GB, only " + gb(have) +
+           " GB free (short by " + gb(short_by) + " GB). Copy was not attempted; "
+           "free up space and it will continue automatically.";
+}
 
 void copy_worker(std::string src, std::string dst, std::string ip,
                   std::vector<std::string> only_names = {})
@@ -522,17 +682,37 @@ void copy_worker(std::string src, std::string dst, std::string ip,
     // 建立長連線 Talker，整個 copy_worker 生命週期共用，避免頻繁建立/關閉 socket 干擾 heartbeat
     Talker copy_talker(ip, 9000);
 
+    // 來源是 ZIP 還是資料夾決定顯示的狀態（UNZIPPING / COPYING）。用副檔名判斷，
+    // 跟下面實際分流的條件同一套，避免 UI 先顯示 COPYING 再跳成 UNZIPPING。
+    bool src_is_zip_for_status;
+    {
+        std::string lower = src;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        src_is_zip_for_status = lower.size() >= 4 && lower.rfind(".zip") == lower.size() - 4;
+    }
+
     // Initialize file status
     FileInfo initial_info;
     {
         std::lock_guard<std::mutex> lock(file_info_mutex);
-        global_file_info.status = FileStatus::COPYING;
+        global_file_info.status = src_is_zip_for_status ? FileStatus::UNZIPPING
+                                                       : FileStatus::COPYING;
         global_file_info.progress = 0.0;
         global_file_info.copied_bytes = 0;
         global_file_info.total_bytes = 0;
         global_file_info.speed_mbps = 0.0;
         global_file_info.eta_seconds = 0;
         global_file_info.error_msg = "";
+        // 新的一輪開始，清掉前一輪留下的過期提示——但「目前仍然成立的空間不足」
+        // 要留著。
+        //
+        // 無條件清會閃爍：觸發是 2 秒一次，每輪開頭清掉、空間檢查後又設回去，
+        // UI 就會看到警告一亮一暗（實測如此）。所以只有在沒有進行中的空間問題時
+        // 才清 warning_msg；空間問題本身則由「換路徑」或「檢查通過」來清除。
+        if (g_space_note.empty())
+            global_file_info.warning_msg = "";
+        else
+            global_file_info.warning_msg = g_space_note;
         initial_info = global_file_info;
     }
     send_file_status(copy_talker, initial_info);
@@ -554,6 +734,7 @@ void copy_worker(std::string src, std::string dst, std::string ip,
         send_file_status(copy_talker, info_to_send);
         std::cout << ts() << "[COPY ERROR] " << msg << std::endl;
     };
+
 
     if (src.empty())
     {
@@ -682,7 +863,7 @@ void copy_worker(std::string src, std::string dst, std::string ip,
         // unzip_file 解析到 TOTAL_BYTES 就會立刻回呼把正確總量補上。
         {
             std::lock_guard<std::mutex> lock(file_info_mutex);
-            global_file_info.status = FileStatus::COPYING;
+            global_file_info.status = FileStatus::UNZIPPING;
             global_file_info.total_bytes = 0;
             global_file_info.copied_bytes = 0;
             global_file_info.progress = 0.0;
@@ -708,6 +889,9 @@ void copy_worker(std::string src, std::string dst, std::string ip,
             global_file_info.copied_bytes = current_bytes;
             global_file_info.total_bytes = total_bytes;
             global_file_info.progress = total_bytes > 0 ? (double)current_bytes / total_bytes * 100.0 : 0.0;
+            // unzip_file 已經在算「第幾個 / 共幾個 entry」，直接轉給 UI。
+            global_file_info.current_file = current_file;
+            global_file_info.total_files = total_files;
 
             if (elapsed > 0) {
                 double mb_copied = current_bytes / (1024.0 * 1024.0);
@@ -731,18 +915,23 @@ void copy_worker(std::string src, std::string dst, std::string ip,
         // flatten 永遠不會建子資料夾，於是驗證永遠缺檔、永遠重抓整包，
         // 形成沒有終點的重解迴圈。保留結構同時修掉「壞 installer」跟「無限重跑」。
         std::string unzip_error;
+        bool zip_no_space = false;
         bool success = unzip_file(src, extract_path.string(), false, progress_cb, &unzip_error,
-                                 only_names, &copy_cancel);
+                                 only_names, &copy_cancel, &zip_no_space);
 
         if (success)
         {
             std::cout << ts() << "[COPY] ZIP extraction completed successfully" << std::endl;
 
+            // Delta 解壓不保證來源裡真的有這個檔案（unzip_file 找不到就跳過）。
+            // 解壓完後逐一確認目的地是否真的有了。
+            //
+            // 找不到的檔案不算「這次解壓失敗」——解壓這件事本身確實跑完了，
+            // 只是來源沒有那幾個檔案。所以走 success + 一行說明，而不是
+            // COPY_FAILED；否則一個「來源本來就缺一個檔」的 installer 會永遠
+            // 顯示 FAILED，即使它其他部分完全可用。
+            std::string unresolved_note;
             if (!only_names.empty()) {
-                // Delta 解壓不保證來源裡真的有這個檔案（unzip_file 找不到
-                // 就跳過，不當失敗）——解壓完後逐一確認目的地是否真的有了，
-                // 找不到的代表來源也沒有這個檔案，清楚回報而不是靜默留在
-                // 缺檔狀態。
                 std::vector<std::string> unresolved;
                 for (const auto& name : only_names) {
                     std::error_code fec;
@@ -755,8 +944,8 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                         if (i) joined += ", ";
                         joined += unresolved[i];
                     }
-                    fail_with("Missing files not found in source: " + joined);
-                    return;
+                    unresolved_note = "Not present in source: " + joined;
+                    std::cout << ts() << "[COPY] " << unresolved_note << std::endl;
                 }
             }
 
@@ -777,13 +966,51 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                 global_file_info.progress = 100.0;
                 global_file_info.total_bytes = total_size;
                 global_file_info.copied_bytes = total_size;
+                global_file_info.error_msg = "";
+                if (!unresolved_note.empty())
+                    global_file_info.warning_msg = unresolved_note;
+                // 解壓成功代表空間是夠的，清掉之前留下的空間警告。
+                g_space_note.clear();
                 info_to_send = global_file_info;
             }
+            send_file_status(copy_talker, info_to_send);
+        }
+        else if (zip_no_space)
+        {
+            // 空間不足:解壓在寫任何 entry 之前就收手了,依要求只給 warning。
+            // 訊息直接用 unzip_file 產生的那份——那裡才拿得到扣掉續傳跳過後的
+            // 精確需求量,在這裡重算會得到 0（total_bytes 還沒被更新)。
+            std::string note = unzip_error.empty()
+                ? std::string("Not enough disk space for extraction")
+                : unzip_error;
+            last_copy_blocked_by_space = true;
+
+            FileInfo info_to_send;
+            bool note_changed;
+            {
+                std::lock_guard<std::mutex> lock(file_info_mutex);
+                note_changed = (g_space_note != note);
+                g_space_note = note;
+                global_file_info.warning_msg = note;
+                global_file_info.error_msg = "";
+                global_file_info.status = FileStatus::COPY_COMPLETE;
+                global_file_info.progress = 0.0;
+                global_file_info.copied_bytes = 0;
+                info_to_send = global_file_info;
+            }
+            if (note_changed)
+                std::cout << ts() << "[COPY WARNING] " << note << std::endl;
             send_file_status(copy_talker, info_to_send);
         }
         else
         {
             std::cout << ts() << "[COPY ERROR] ZIP extraction failed" << std::endl;
+
+            // 空間不是這次失敗的原因，把舊的空間警告清掉，不要讓它掛在別的錯誤上。
+            {
+                std::lock_guard<std::mutex> lock(file_info_mutex);
+                g_space_note.clear();
+            }
 
             // 🔧 解壓失敗不再刪掉目的地資料夾。
             // installer_path 是使用者指定的路徑，可能本來就有內容（前一次成功的
@@ -854,9 +1081,31 @@ void copy_worker(std::string src, std::string dst, std::string ip,
             }
         }
 
-        // Calculate total size
+        // 目的地已經有一份大小相同的檔案時就跳過不重抄。
+        //
+        // 這是「續傳」的核心：全量複製以前是無條件從第 1 個檔案重抄整份
+        // installer，所以只要中途出任何狀況（按停止、磁碟滿、網路斷），
+        // 已經搬好的幾十 GB 全部作廢，下一輪從 0 開始（實測 36GB 要 25 分鐘）。
+        // 逐檔比對之後，重試會接續，而且「來源只更新了幾個檔」的情境也會自動變快。
+        //
+        // 判準用「大小相同」而不是逐位元組比對／hash：整份 installer 動輒 36GB，
+        // 讀完再比會比直接重抄還慢，失去意義。這也跟
+        // validate_installer_files 判斷完整性的標準一致（同樣是比大小），
+        // 所以不會出現「複製說跳過、驗證卻說缺檔」互相矛盾的情況。
+        auto already_copied = [](const std::filesystem::path& src_file,
+                                 const std::filesystem::path& dst_file,
+                                 uint64_t src_size) {
+            std::error_code ec;
+            if (!std::filesystem::exists(dst_file, ec)) return false;
+            uint64_t dst_size = std::filesystem::file_size(dst_file, ec);
+            return !ec && dst_size == src_size;
+        };
+
+        // Calculate total size（只算真正需要搬的，進度百分比才不會一開始就虛低）
         uint64_t total_size = 0;
         int total_files = 0;
+        int skipped_files = 0;
+        uint64_t skipped_bytes = 0;
 
         if (!only_names.empty() && std::filesystem::is_directory(src_path)) {
             for (const auto& item : to_copy) {
@@ -869,10 +1118,19 @@ void copy_worker(std::string src, std::string dst, std::string ip,
             total_files = 1;
         } else if (std::filesystem::is_directory(src_path)) {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(src_path)) {
-                if (entry.is_regular_file()) {
-                    total_size += entry.file_size();
-                    total_files++;
+                if (!entry.is_regular_file()) continue;
+
+                uint64_t sz = entry.file_size();
+                std::wstring rel = entry.path().wstring().substr(src_path.wstring().size());
+                if (!rel.empty() && (rel[0] == L'\\' || rel[0] == L'/')) rel.erase(0, 1);
+
+                if (already_copied(entry.path(), dst_path / rel, sz)) {
+                    skipped_files++;
+                    skipped_bytes += sz;
+                    continue;
                 }
+                total_size += sz;
+                total_files++;
             }
         }
 
@@ -881,7 +1139,83 @@ void copy_worker(std::string src, std::string dst, std::string ip,
             global_file_info.total_bytes = total_size;
         }
         send_file_status(copy_talker, global_file_info);
-        
+
+        // ===== 空間預檢 =====
+        // total_size 這時已經扣掉續傳跳過的檔案，所以比對的是「這一輪真的要寫多少」。
+        // 空間不夠就完全不動手：硬跑下去只會在寫到大檔中途撞 ERROR_DISK_FULL，
+        // 留下一個半截的檔案，而且下一輪還會再撞一次。
+        //
+        // 依照「空間不足只給 warning、不要 FAIL」的要求，這裡不呼叫 fail_with，
+        // 而是把說明寫進 g_space_note，由 file-status 檢查連同其他 warning 一起呈現。
+        {
+            uint64_t free_bytes = 0;
+            const uint64_t margin = 256ull * 1024 * 1024;   // 留一點餘裕，別把磁碟填到滿
+            if (total_size > 0 && destination_free_bytes(dst_path, free_bytes) &&
+                free_bytes < total_size + margin)
+            {
+                std::string note = format_space_note(total_size + margin, free_bytes);
+                last_copy_blocked_by_space = true;
+
+                FileInfo info_to_send;
+                bool note_changed;
+                {
+                    std::lock_guard<std::mutex> lock(file_info_mutex);
+                    note_changed = (g_space_note != note);
+                    g_space_note = note;
+                    global_file_info.warning_msg = note;
+                    global_file_info.error_msg = "";
+                    // 狀態不設 COPY_FAILED；目的地能不能用交由 file-status 檢查判斷。
+                    global_file_info.status = FileStatus::COPY_COMPLETE;
+                    global_file_info.progress = 0.0;
+                    global_file_info.copied_bytes = 0;
+                    info_to_send = global_file_info;
+                }
+                // 觸發是 2 秒一次，每輪都印會洗爆 log；只在內容變化時印。
+                if (note_changed)
+                    std::cout << ts() << "[COPY WARNING] " << note << std::endl;
+                send_file_status(copy_talker, info_to_send);
+                return;
+            }
+            std::lock_guard<std::mutex> lock(file_info_mutex);
+            g_space_note.clear();
+        }
+
+#ifdef _WIN32
+        // 單一檔案複製失敗時的統一處理。呼叫端做完就 return。
+        //
+        // 磁碟寫滿（112 / 39）刻意不當成 FAIL：那不是複製邏輯壞了，而是環境不夠用，
+        // 依使用者要求只給 warning。清出空間後續傳會自己把剩下的接完，不需人工重跑。
+        // 其他錯誤碼仍然是真正的失敗。
+        auto stop_on_copy_error = [&](const std::filesystem::path& target, DWORD err) {
+            if (copy_cancel) {
+                fail_with("Copy cancelled");
+                return;
+            }
+            if (err == ERROR_DISK_FULL || err == ERROR_HANDLE_DISK_FULL) {
+                uint64_t free_bytes = 0;
+                destination_free_bytes(dst_path, free_bytes);
+                std::string note =
+                    "Disk filled up while copying " + target.filename().string() + ". " +
+                    format_space_note(total_size, free_bytes);
+                std::cout << ts() << "[COPY WARNING] " << note << std::endl;
+                last_copy_blocked_by_space = true;
+
+                FileInfo info_to_send;
+                {
+                    std::lock_guard<std::mutex> lock(file_info_mutex);
+                    g_space_note = note;
+                    global_file_info.warning_msg = note;
+                    global_file_info.error_msg = "";
+                    global_file_info.status = FileStatus::COPY_COMPLETE;
+                    info_to_send = global_file_info;
+                }
+                send_file_status(copy_talker, info_to_send);
+                return;
+            }
+            fail_with("Failed to copy file: " + target.filename().string());
+        };
+#endif
+
         auto start_time = std::chrono::steady_clock::now();
         uint64_t copied_so_far = 0;
         int file_count = 0;
@@ -895,6 +1229,9 @@ void copy_worker(std::string src, std::string dst, std::string ip,
             global_file_info.progress = total_size > 0
                 ? (double)bytes_done / total_size * 100.0
                 : 0.0;
+            // 檔案計數跟位元組進度一起更新，UI 才能顯示 92/148。
+            global_file_info.current_file = file_count;
+            global_file_info.total_files = total_files;
 
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
@@ -996,14 +1333,15 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                     { std::error_code fec; file_size = std::filesystem::file_size(src_file, fec); }
 
 #ifdef _WIN32
+                    DWORD cerr = 0;
                     if (!copy_file_win32(
                             src_file.wstring(),
                             target.wstring(),
                             &copy_cancel,
-                            [&](uint64_t cur, uint64_t /*tot*/) { update_progress(copied_so_far + cur); }))
+                            [&](uint64_t cur, uint64_t /*tot*/) { update_progress(copied_so_far + cur); },
+                            &cerr))
                     {
-                        fail_with(copy_cancel ? "Copy cancelled"
-                                              : "Failed to copy file: " + target.filename().string());
+                        stop_on_copy_error(target, cerr);
                         return;
                     }
 #else
@@ -1033,14 +1371,17 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                 std::cout << ts() << "[COPY] Delta copy done: " << file_count << " file(s), "
                           << (copied_so_far / 1024.0 / 1024.0) << " MB\n";
 
+                // 來源也沒有的檔案不算「這次複製失敗」——複製確實跑完了，只是
+                // 來源缺那幾個檔。走 success + 一行說明，理由同 ZIP 分支。
+                std::string unresolved_note;
                 if (!unresolved.empty()) {
                     std::string joined;
                     for (size_t i = 0; i < unresolved.size(); ++i) {
                         if (i) joined += ", ";
                         joined += unresolved[i];
                     }
-                    fail_with("Missing files not found in source: " + joined);
-                    return;
+                    unresolved_note = "Not present in source: " + joined;
+                    std::cout << ts() << "[COPY] " << unresolved_note << std::endl;
                 }
 
                 {
@@ -1048,6 +1389,9 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                     global_file_info.status = FileStatus::COPY_COMPLETE;
                     global_file_info.progress = 100.0;
                     global_file_info.copied_bytes = total_size;
+                    global_file_info.error_msg = "";
+                    if (!unresolved_note.empty())
+                        global_file_info.warning_msg = unresolved_note;
                 }
                 send_file_status(copy_talker, global_file_info);
                 return;
@@ -1055,7 +1399,13 @@ void copy_worker(std::string src, std::string dst, std::string ip,
 
             std::cout << ts() << "[COPY] Starting folder copy: " << total_files
                       << " files, " << (total_size / 1024.0 / 1024.0) << " MB"
-                      << " (exact bytes: " << total_size << ")\n";
+                      << " (exact bytes: " << total_size << ")";
+            if (skipped_files > 0) {
+                std::cout << " [resuming: " << skipped_files << " file(s) / "
+                          << (skipped_bytes / 1024.0 / 1024.0)
+                          << " MB already present, skipped]";
+            }
+            std::cout << "\n";
 
             auto last_heartbeat_log = std::chrono::steady_clock::now();
 
@@ -1096,20 +1446,26 @@ void copy_worker(std::string src, std::string dst, std::string ip,
                 else if (entry.is_regular_file())
                 {
                     std::filesystem::create_directories(target.parent_path());
-                    
+
                     uint64_t file_size = entry.file_size();
 
+                    // 已經有一份大小相同的了 → 跳過。判準與上面算 total_size 時
+                    // 用的是同一個 lambda，兩邊一致才不會讓進度分母與實際搬的量對不上。
+                    if (already_copied(entry.path(), target, file_size))
+                        continue;
+
 #ifdef _WIN32
+                    DWORD cerr = 0;
                     if (!copy_file_win32(
                             entry.path().wstring(),
                             target.wstring(),
                             &copy_cancel,
-                            [&](uint64_t cur, uint64_t /*tot*/) { update_progress(copied_so_far + cur); }))
+                            [&](uint64_t cur, uint64_t /*tot*/) { update_progress(copied_so_far + cur); },
+                            &cerr))
                     {
                         // 忽略這個回傳值會讓失敗變成靜默卡死：狀態留在
                         // COPYING，main loop 永遠等不到 COPY_COMPLETE。
-                        fail_with(copy_cancel ? "Copy cancelled"
-                                              : "Failed to copy file: " + target.filename().string());
+                        stop_on_copy_error(target, cerr);
                         return;
                     }
 #else
@@ -1526,6 +1882,43 @@ void com_monitor(const std::string& ip, Listener* listener)
         }
 
                                 // ===== Send auto_flash status to server =====
+        // ===== 套用本機 WebUI 送來的設定 =====
+        // 刻意在這裡（com_monitor 自己的執行緒）套用，而不是讓 HTTP 執行緒直接寫
+        // listener 的欄位：installer_path / download_path 是 std::string，
+        // 本執行緒每 100ms 就在讀它們，多一個寫入者等於多一組會直接崩的 data race。
+        // 套用點放在讀取這些欄位之前，改完當輪就會生效。
+        {
+            LocalConfigRequest req;
+            if (local_server_take_config(req)) {
+                if (req.installer_path) {
+                    listener->installer_path = *req.installer_path;
+                    std::cout << ts() << "[LOCAL] installer_path = " << *req.installer_path << std::endl;
+                }
+                if (req.download_path) {
+                    listener->download_path = *req.download_path;
+                    std::cout << ts() << "[LOCAL] download_path = " << *req.download_path << std::endl;
+                }
+                if (req.chipset) {
+                    listener->chipset = *req.chipset;
+                    std::cout << ts() << "[LOCAL] chipset = " << chipset_to_string(*req.chipset) << std::endl;
+                }
+                if (req.storage) {
+                    listener->storage = *req.storage;
+                    std::cout << ts() << "[LOCAL] storage = " << storage_to_string(*req.storage) << std::endl;
+                }
+                if (req.flash_stage) {
+                    listener->flash_stage = *req.flash_stage;
+                    std::cout << ts() << "[LOCAL] flash_stage = " << stage_to_string(*req.flash_stage) << std::endl;
+                }
+                // Hamoa / Glymur 只有 NVME，跟遠端 /send 一樣在這裡也夾一次。
+                listener->storage = clamp_storage(listener->chipset, listener->storage);
+                if (req.auto_flash) {
+                    listener->set_auto_flash(*req.auto_flash);
+                    std::cout << ts() << "[LOCAL] auto_flash = " << (*req.auto_flash ? "1" : "0") << std::endl;
+                }
+            }
+        }
+
         bool current_auto_flash = listener->auto_flash();
         
         // Detect auto_flash state change from false to true
@@ -1607,7 +2000,7 @@ void com_monitor(const std::string& ip, Listener* listener)
             }
 
             // 如果正在複製/解壓縮，不要檢查檔案，保持 COPYING 狀態
-            if (current_status != FileStatus::COPYING) {
+            if (!is_copy_in_progress(current_status)) {
                 installer_path_str = listener->installer_path;
 
                 if (installer_path_str.empty()) {
@@ -1617,6 +2010,12 @@ void com_monitor(const std::string& ip, Listener* listener)
                     global_file_info.total_bytes = 0;
                     global_file_info.copied_bytes = 0;
                     global_file_info.progress = 0.0;
+                    // 不是就緒狀態，清掉上一輪的警告，否則 UI 會顯示一個
+                    // 已經不適用的提示（而且警告只在「內容改變」時才記 log，
+                    // 殘留會讓下一輪真的該提示時反而不記）。
+                    global_file_info.warning_msg = "";
+                    global_file_info.current_file = 0;
+                    global_file_info.total_files = 0;
                 } else {
                     std::filesystem::path inst_path(installer_path_str);
                     bool inst_exists = std::filesystem::exists(inst_path);
@@ -1626,6 +2025,9 @@ void com_monitor(const std::string& ip, Listener* listener)
                         std::lock_guard<std::mutex> lock(file_info_mutex);
                         global_file_info.status = FileStatus::PATH_NOT_A_FOLDER;
                         global_file_info.error_msg = "Installer path is not a folder: " + installer_path_str;
+                        global_file_info.warning_msg = "";
+                        global_file_info.current_file = 0;
+                        global_file_info.total_files = 0;
                         std::cout << ts() << "[FILE_INFO] Installer path is not a folder: " << installer_path_str << std::endl;
                     } else if (inst_exists && std::filesystem::is_directory(inst_path)) {
                         // installer path 是資料夾，檢查裡面有沒有 emmcdl.exe
@@ -1639,54 +2041,78 @@ void com_monitor(const std::string& ip, Listener* listener)
                             InstallerValidation validation =
                                 validate_installer_files(inst_path, listener->flash_stage, listener->download_path);
 
-                            if (validation.ok) {
-                                // 所有必要檔案齊全，installer 就緒
-                                if (current_status != FileStatus::COPY_COMPLETE &&
-                                    current_status != FileStatus::COPY_FAILED &&
-                                    current_status != FileStatus::FOUND) {
-                                    uint64_t total_size = 0;
-                                    try {
-                                        for (const auto& entry : std::filesystem::recursive_directory_iterator(inst_path)) {
-                                            if (entry.is_regular_file()) total_size += entry.file_size();
-                                        }
-                                    } catch (...) {}
-                                    std::lock_guard<std::mutex> lock(file_info_mutex);
-                                    global_file_info.status = FileStatus::FOUND;
-                                    global_file_info.total_bytes = total_size;
-                                    global_file_info.copied_bytes = total_size;
-                                    global_file_info.progress = 100.0;
-                                    global_file_info.error_msg = "";
-                                    std::cout << ts() << "[FILE_INFO] emmcdl.exe found, installer ready" << std::endl;
+                            // emmcdl.exe 在 → 這個目的地就是一份可辨識、可用的
+                            // installer，狀態一律回報就緒。
+                            //
+                            // 「檔案齊不齊」不再決定成功或失敗，只決定要不要附警告：
+                            // 缺檔會由觸發邏輯去補（delta），補不到就把檔名寫在
+                            // warning 上讓操作員自己判斷。以前這裡會設
+                            // MISSING_FILES，於是「來源本來就少一個檔」的
+                            // installer 即使其他部分完全可用也永遠顯示 FAILED。
+                            std::string warn_str =
+                                format_installer_notes(validation.missing, validation.warnings);
+                            // 空間不足的提示要一起帶上，否則每 2 秒重算就會蓋掉
+                            // copy_worker 寫的那一行，UI 永遠看不到空間問題。
+                            {
+                                std::lock_guard<std::mutex> lock(file_info_mutex);
+                                if (!g_space_note.empty()) {
+                                    if (!warn_str.empty()) warn_str += " ";
+                                    warn_str += g_space_note;
                                 }
-                            } else {
-                                // emmcdl.exe 有，但 rawprogram0.xml/WDFlash.xml
-                                // 本身或其中列出的檔案不齊全
-                                if (current_status != FileStatus::COPY_FAILED &&
-                                    current_status != FileStatus::MISSING_FILES) {
-                                    std::string missing_str;
-                                    for (size_t i = 0; i < validation.missing.size(); ++i) {
-                                        if (i) missing_str += ", ";
-                                        missing_str += validation.missing[i];
+                            }
+
+                            bool recovering = (current_status == FileStatus::COPY_FAILED ||
+                                               current_status == FileStatus::MISSING_FILES);
+
+                            if (current_status != FileStatus::COPY_COMPLETE &&
+                                current_status != FileStatus::FOUND) {
+                                uint64_t total_size = 0;
+                                try {
+                                    for (const auto& entry : std::filesystem::recursive_directory_iterator(inst_path)) {
+                                        if (entry.is_regular_file()) total_size += entry.file_size();
                                     }
+                                } catch (...) {}
+                                std::lock_guard<std::mutex> lock(file_info_mutex);
+                                global_file_info.status = FileStatus::FOUND;
+                                global_file_info.total_bytes = total_size;
+                                global_file_info.copied_bytes = total_size;
+                                global_file_info.progress = 100.0;
+                                global_file_info.error_msg = "";
+                                global_file_info.warning_msg = warn_str;
+                                std::cout << ts() << "[FILE_INFO] "
+                                          << (recovering ? "installer now validates, clearing previous failure"
+                                                         : "emmcdl.exe found, installer ready")
+                                          << (warn_str.empty() ? "" : " (with warning)") << std::endl;
+                                if (!warn_str.empty())
+                                    std::cout << ts() << "[FILE_INFO WARNING] " << warn_str << std::endl;
+                            } else {
+                                // 狀態早就是就緒了（上面的 if 不會進去），但缺檔清單
+                                // 與 flash_stage 需要的 XML 都會變，警告內容必須每輪
+                                // 重新同步，否則會顯示過期的警告。
+                                bool changed = false;
+                                {
                                     std::lock_guard<std::mutex> lock(file_info_mutex);
-                                    global_file_info.status = FileStatus::MISSING_FILES;
-                                    global_file_info.total_bytes = 0;
-                                    global_file_info.copied_bytes = 0;
-                                    global_file_info.progress = 0.0;
-                                    global_file_info.error_msg = "Missing required files: " + missing_str;
-                                    std::cout << ts() << "[FILE_INFO] Missing required files: " << missing_str << std::endl;
+                                    if (global_file_info.warning_msg != warn_str) {
+                                        global_file_info.warning_msg = warn_str;
+                                        changed = true;
+                                    }
                                 }
+                                if (changed && !warn_str.empty())
+                                    std::cout << ts() << "[FILE_INFO WARNING] " << warn_str << std::endl;
                             }
                         } else {
                             // 資料夾存在但沒有 emmcdl.exe，需要複製/解壓縮
                             if (current_status != FileStatus::COPY_FAILED &&
-                                current_status != FileStatus::COPYING) {
+                                !is_copy_in_progress(current_status)) {
                                 std::lock_guard<std::mutex> lock(file_info_mutex);
                                 global_file_info.status = FileStatus::WAITING_FOR_COPY;
                                 global_file_info.total_bytes = 0;
                                 global_file_info.copied_bytes = 0;
                                 global_file_info.progress = 0.0;
                                 global_file_info.error_msg = "";
+                                global_file_info.warning_msg = "";
+                                global_file_info.current_file = 0;
+                                global_file_info.total_files = 0;
                                 std::cout << ts() << "[FILE_INFO] Folder exists but no emmcdl.exe → WAITING_FOR_COPY" << std::endl;
                             }
                         }
@@ -1711,37 +2137,12 @@ void com_monitor(const std::string& ip, Listener* listener)
                 std::lock_guard<std::mutex> lock(file_info_mutex);
                 info_to_send = global_file_info;
             }
-            
-            // Serialize FileInfo
-            std::vector<char> buffer;
-            int status_int = static_cast<int>(info_to_send.status);
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&status_int), 
-                reinterpret_cast<const char*>(&status_int) + sizeof(int));
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&info_to_send.total_bytes), 
-                reinterpret_cast<const char*>(&info_to_send.total_bytes) + sizeof(uint64_t));
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&info_to_send.copied_bytes), 
-                reinterpret_cast<const char*>(&info_to_send.copied_bytes) + sizeof(uint64_t));
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&info_to_send.progress), 
-                reinterpret_cast<const char*>(&info_to_send.progress) + sizeof(double));
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&info_to_send.speed_mbps), 
-                reinterpret_cast<const char*>(&info_to_send.speed_mbps) + sizeof(double));
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&info_to_send.eta_seconds), 
-                reinterpret_cast<const char*>(&info_to_send.eta_seconds) + sizeof(int));
-            uint32_t error_len = static_cast<uint32_t>(info_to_send.error_msg.size());
-            buffer.insert(buffer.end(), 
-                reinterpret_cast<const char*>(&error_len), 
-                reinterpret_cast<const char*>(&error_len) + sizeof(uint32_t));
-            buffer.insert(buffer.end(), info_to_send.error_msg.begin(), info_to_send.error_msg.end());
-            
-            if (!talker.send_msg(MSG_FILE_STATUS, buffer.data(), buffer.size())) {
-                std::cout << ts() << "[Send failed] MSG_FILE_STATUS" << std::endl;
-            }
+
+            // 這裡以前有一份手寫的 FileInfo 序列化，跟 send_file_status() 裡那份
+            // 重複。兩份各自維護的結果是新增 warning_msg 時只改到其中一份：
+            // 警告在 client log 有、UI 卻永遠是空的（因為 server 收到的正是這條
+            // 每 2 秒的廣播）。改成直接呼叫同一個序列化函式，欄位只會有一個定義處。
+            send_file_status(talker, info_to_send);
 
             last_file_status_time = now_file;
 
@@ -1807,11 +2208,14 @@ void com_monitor(const std::string& ip, Listener* listener)
                                 current_status = global_file_info.status;
                             }
 
-                            // NOT_FOUND / WAITING_FOR_COPY / COPY_FAILED / MISSING_FILES 都允許觸發
-                            if (current_status == FileStatus::NOT_FOUND ||
-                                current_status == FileStatus::WAITING_FOR_COPY ||
-                                current_status == FileStatus::COPY_FAILED ||
-                                current_status == FileStatus::MISSING_FILES) {
+                            // 允許觸發複製的狀態。
+                            //
+                            // FOUND / COPY_COMPLETE 也要放進來：缺檔現在只會被報成
+                            // 「success + warning」而不再是 MISSING_FILES，如果只允許
+                            // 失敗狀態觸發，delta 補檔就永遠不會啟動了。重複觸發由
+                            // 收斂保護把次數收斂掉。
+                            // 唯一要排除的是正在進行中（COPYING / UNZIPPING）。
+                            if (!is_copy_in_progress(current_status)) {
 
                                 // 先建立 installer path 目錄（不存在時）
                                 try {
@@ -1871,6 +2275,10 @@ void com_monitor(const std::string& ip, Listener* listener)
                                     guard_missing.clear();
                                     guard_no_progress = 0;
                                     guard_latched = false;
+                                    // 換了 installer/download 路徑，舊路徑的空間警告
+                                    // 已經不適用（那是對另一顆磁碟／另一份來源算的）。
+                                    std::lock_guard<std::mutex> lock(file_info_mutex);
+                                    g_space_note.clear();
                                 }
 
                                 // 目的地整個不存在了（使用者刪掉重來），等於全新
@@ -1885,6 +2293,9 @@ void com_monitor(const std::string& ip, Listener* listener)
                                 if (missing_key != guard_missing) {
                                     guard_no_progress = 0;
                                     guard_latched = false;
+                                } else if (last_copy_blocked_by_space.exchange(false)) {
+                                    // 空間不足不算無進展，否則清出空間後就再也不會重試。
+                                    guard_no_progress = 0;
                                 } else if (last_copy_cancelled.exchange(false)) {
                                     // 上一輪是被取消的，不是「跑完卻沒改善」，不計數。
                                     guard_no_progress = 0;
@@ -1893,23 +2304,40 @@ void com_monitor(const std::string& ip, Listener* listener)
                                 }
                                 guard_missing = missing_key;
 
-                                if (guard_latched) {
-                                    // 已判定無法收斂，不再觸發複製。狀態要持續反映
-                                    // 原因，否則 file-status 檢查會把它改寫成
-                                    // WAITING_FOR_COPY，使用者只看到「卡住不動」
-                                    // 卻不知道為什麼（實測踩過）。這裡只更新狀態不寫
-                                    // log，避免洗頻。
-                                    std::string joined;
-                                    for (size_t i = 0; i < validation.missing.size(); ++i) {
-                                        if (i) joined += ", ";
-                                        joined += validation.missing[i];
-                                    }
+                                // 閂鎖／放棄時怎麼回報，取決於「這個目的地到底可不可用」：
+                                //   emmcdl.exe 在 → 複製／解壓其實跑完了，只是來源湊
+                                //     不出某幾個檔案。依照「完成就算 success，異常用
+                                //     warning 說明」的規則，這裡不動狀態，交給
+                                //     file-status 檢查回報 FOUND + 一行含缺檔清單的警告。
+                                //   emmcdl.exe 不在 → 根本沒產出可用的 installer，
+                                //     這才是真正的失敗，而且要明講否則會靜靜卡在
+                                //     WAITING_FOR_COPY（實測踩過）。
+                                bool have_emmcdl = has_emmcdl(inst_path);
+
+                                // 空間不足是環境問題，依要求只用 warning 呈現，
+                                // 絕不因此變成 COPY_FAILED——否則使用者清出空間前
+                                // 會看到一個看似程式壞掉的紅字。
+                                bool blocked_by_space;
+                                {
                                     std::lock_guard<std::mutex> lock(file_info_mutex);
-                                    global_file_info.status = FileStatus::COPY_FAILED;
-                                    global_file_info.error_msg =
-                                        "Source does not provide required file(s): " + joined +
-                                        " (stopped retrying; change installer/download path or"
-                                        " delete the destination to retry)";
+                                    blocked_by_space = !g_space_note.empty();
+                                }
+                                if (blocked_by_space) have_emmcdl = true;
+
+                                if (guard_latched) {
+                                    if (!have_emmcdl) {
+                                        std::string joined;
+                                        for (size_t i = 0; i < validation.missing.size(); ++i) {
+                                            if (i) joined += ", ";
+                                            joined += validation.missing[i];
+                                        }
+                                        std::lock_guard<std::mutex> lock(file_info_mutex);
+                                        global_file_info.status = FileStatus::COPY_FAILED;
+                                        global_file_info.error_msg =
+                                            "Source does not provide required file(s): " + joined +
+                                            " (stopped retrying; change installer/download path or"
+                                            " delete the destination to retry)";
+                                    }
                                 } else if (guard_no_progress >= 2) {
                                     guard_latched = true;
 
@@ -1923,15 +2351,17 @@ void com_monitor(const std::string& ip, Listener* listener)
                                                  " The source does not provide: " << joined
                                               << ". Not retrying until installer/download path changes. ***\n";
 
-                                    FileInfo info_to_send;
-                                    {
-                                        std::lock_guard<std::mutex> lock(file_info_mutex);
-                                        global_file_info.status = FileStatus::COPY_FAILED;
-                                        global_file_info.error_msg =
-                                            "Source does not provide required file(s): " + joined;
-                                        info_to_send = global_file_info;
+                                    if (!have_emmcdl) {
+                                        FileInfo info_to_send;
+                                        {
+                                            std::lock_guard<std::mutex> lock(file_info_mutex);
+                                            global_file_info.status = FileStatus::COPY_FAILED;
+                                            global_file_info.error_msg =
+                                                "Source does not provide required file(s): " + joined;
+                                            info_to_send = global_file_info;
+                                        }
+                                        send_file_status(talker, info_to_send);
                                     }
-                                    send_file_status(talker, info_to_send);
                                 } else {
                                     // 只有真的要動手時才印來源類型，否則閂鎖之後
                                     // 每輪都印會把 log 洗爆（實測 10Hz 洗頻）。
@@ -1986,6 +2416,37 @@ void com_monitor(const std::string& ip, Listener* listener)
             }
         }
 
+        // ===== 把「送給遠端的同一份資料」也發佈給本機 WebUI =====
+        // 發佈點放在迴圈尾端、所有封包都送完之後，本機看到的就跟遠端收到的一致。
+        {
+            LocalMirrorState mirror;
+            mirror.ip = ip;
+            mirror.device = get_device_name();
+            mirror.heartbeat = true;              // 這個迴圈還在跑就代表活著
+            mirror.auto_flash = listener->auto_flash();
+            mirror.installer_path = listener->installer_path;
+            mirror.download_path = listener->download_path;
+            mirror.chipset = listener->chipset;
+            mirror.storage = clamp_storage(listener->chipset, listener->storage);
+            mirror.flash_stage = listener->flash_stage;
+            {
+                std::lock_guard<std::mutex> lock(file_info_mutex);
+                mirror.file_info = global_file_info;
+            }
+            {
+                std::lock_guard<std::mutex> lock(com_mutex);
+                for (const auto& [num, info] : comport_map) {
+                    LocalMirrorState::Comport c;
+                    c.number = num;
+                    c.status = info.status;
+                    c.log = info.log;
+                    c.error_msg = info.error_msg;
+                    mirror.comports.push_back(std::move(c));
+                }
+            }
+            local_server_publish(mirror);
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     }
@@ -2016,6 +2477,33 @@ int main(int argc, char* argv[])
         ip = argv[1];
     }
 
+    // ===== 本機 WebUI / API =====
+    // 預設埠 47913：IANA 未指派、也不在常見服務或開發工具的慣用範圍，撞埠機率低。
+    // 需要時可用 --local-port 改，或 --no-local 完全關掉。
+    int  local_port   = 47913;
+    bool open_browser = true;
+    bool local_enable = true;
+    for (int i = 2; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--no-local") {
+            local_enable = false;
+        } else if (a == "--no-browser") {
+            open_browser = false;
+        } else if (a == "--local-port" && i + 1 < argc) {
+            try { local_port = std::stoi(argv[++i]); } catch (...) {
+                std::cout << "[LOCAL] Ignoring bad --local-port value\n";
+            }
+        }
+    }
+
+    if (local_enable) {
+        if (!local_server_start(local_port, open_browser)) {
+            // 本機 UI 起不來不該讓整個 client 停擺——燒錄本身完全不依賴它。
+            std::cout << "[LOCAL] Local WebUI disabled (could not bind port "
+                      << local_port << ")\n";
+        }
+    }
+
 
     std::thread com_monitor_thread(com_monitor,ip, &listener);
     com_monitor_thread.detach();    
@@ -2036,7 +2524,7 @@ int main(int argc, char* argv[])
             }
             
             // 如果正在複製，等待完成
-            if (current_file_status == FileStatus::COPYING) {
+            if (is_copy_in_progress(current_file_status)) {
                 // ⚠️ 不要持著鎖 sleep：com_monitor 每輪都要拿 file_info_mutex
                 //    讀狀態，抱著鎖睡 2 秒會直接拖慢 heartbeat。
                 //    另外 new_com_queue 是 com_mutex 保護的，不是 file_info_mutex。
@@ -2122,7 +2610,7 @@ int main(int argc, char* argv[])
                 }
                 
                 // 如果正在複製或狀態不正確，保持在隊列中
-                if (final_check_status == FileStatus::COPYING) {
+                if (is_copy_in_progress(final_check_status)) {
                     std::cout << ts() << "[WAITING] Installer is still copying, keeping COM ports in queue\n";
                     continue;
                 }

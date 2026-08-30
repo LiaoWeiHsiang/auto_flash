@@ -16,13 +16,18 @@ using UnzipProgressCallback = std::function<void(int, int, uint64_t, uint64_t)>;
 // matches one of the given names are extracted (delta/partial extraction).
 // If cancel is not nullptr and becomes true, the extraction is aborted and the helper
 // process is killed -- without this a 44GB extraction cannot be stopped once started.
+// If out_insufficient_space is not nullptr it is set to true when the extraction was
+// abandoned purely because the destination volume lacks room. Callers use it to report a
+// warning instead of a hard failure -- running out of disk is an environment problem, not
+// a broken extraction.
 bool unzip_file(const std::string& zip_path,
                 const std::string& dest_path,
                 bool flatten = false,
                 UnzipProgressCallback progress_callback = nullptr,
                 std::string* error_msg = nullptr,
                 const std::vector<std::string>& only_names = {},
-                const std::atomic<bool>* cancel = nullptr);
+                const std::atomic<bool>* cancel = nullptr,
+                bool* out_insufficient_space = nullptr);
 
 // Check if a file is a ZIP file
 bool is_zip_file(const std::string& path);

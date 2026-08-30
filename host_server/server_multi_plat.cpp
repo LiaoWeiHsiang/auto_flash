@@ -404,6 +404,7 @@ int main()
                 case FileStatus::NOT_FOUND:          file_status_str = "not_found";          break;
                 case FileStatus::FOUND:              file_status_str = "found";              break;
                 case FileStatus::COPYING:            file_status_str = "copying";            break;
+                case FileStatus::UNZIPPING:          file_status_str = "unzipping";          break;
                 case FileStatus::COPY_COMPLETE:      file_status_str = "copy_complete";      break;
                 case FileStatus::COPY_FAILED:        file_status_str = "copy_failed";        break;
                 case FileStatus::PATH_NOT_A_FOLDER:  file_status_str = "path_not_a_folder";  break;
@@ -419,7 +420,10 @@ int main()
                 {"progress", c.file_info.progress},
                 {"speed_mbps", c.file_info.speed_mbps},
                 {"eta_seconds", c.file_info.eta_seconds},
-                {"error_msg", c.file_info.error_msg}
+                {"error_msg", c.file_info.error_msg},
+                {"warning_msg", c.file_info.warning_msg},
+                {"current_file", c.file_info.current_file},
+                {"total_files", c.file_info.total_files}
             };
 
             arr.push_back({
@@ -457,11 +461,18 @@ int main()
         if (j.contains("auto_flash"))
             c.server_get_auto_flash_status = (j["auto_flash"] == "1");
 
-        if (j.contains("installer_path") && !j["installer_path"].get<std::string>().empty())
-            c.installer_path = j["installer_path"];
+        // 路徑先去掉頭尾的引號再存。使用者常直接貼上 Windows「複製檔案位址」
+        // 的結果（"C:\path"），帶著引號的路徑到 client 會被當成不存在。
+        // 先正規化再判斷是否為空，這樣只輸入 "" 也不會覆蓋掉原本的設定。
+        if (j.contains("installer_path")) {
+            std::string p = strip_surrounding_quotes(j["installer_path"].get<std::string>());
+            if (!p.empty()) c.installer_path = p;
+        }
 
-        if (j.contains("download_path") && !j["download_path"].get<std::string>().empty())
-            c.download_path = j["download_path"];
+        if (j.contains("download_path")) {
+            std::string p = strip_surrounding_quotes(j["download_path"].get<std::string>());
+            if (!p.empty()) c.download_path = p;
+        }
 
         if (j.contains("chipset") && !j["chipset"].get<std::string>().empty())
             c.chipset = chipset_from_string(j["chipset"]);

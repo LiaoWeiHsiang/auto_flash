@@ -37,6 +37,7 @@ BASE = r"C:\af_test"
 SRC_FOLDER = BASE + r"\installer_src"
 SRC_ZIP = BASE + r"\installer_src.zip"
 SRC_ZIP_MISSING = BASE + r"\installer_missing.zip"
+SRC_ZIP_NOXML = BASE + r"\installer_noxml.zip"
 DEST = BASE + r"\dest"
 LOG = BASE + r"\run_verify.log"
 
@@ -164,9 +165,9 @@ def quiesce(park_src=None, timeout=600):
     api_send(DEST, park_src or SRC_ZIP, auto="0")
     t0 = time.time()
     while time.time() - t0 < timeout:
-        if api_clients().get("file_info", {}).get("status") != "copying":
+        if api_clients().get("file_info", {}).get("status") not in BUSY_STATES:
             time.sleep(2)  # let the worker thread write its final status
-            if api_clients().get("file_info", {}).get("status") != "copying":
+            if api_clients().get("file_info", {}).get("status") not in BUSY_STATES:
                 return True
         time.sleep(1)
     return False
@@ -177,6 +178,18 @@ def reset(src) -> int:
     quiesce(src)
     clean_dest()
     return log_len()
+
+
+def finish():
+    """End-of-test cleanup.
+
+    Must stop the client BEFORE deleting the destination. The retrigger now fires from any
+    non-busy status, so a bare clean_dest() leaves the client free to immediately start a
+    fresh copy into the folder we just removed - that stray copy then shows up inside the
+    next (or previous) test's log window and looks like a restart loop.
+    """
+    quiesce(SRC_ZIP)
+    clean_dest()
 
 
 def wait_for_log(log_mark: int, needle: str, timeout=240):
@@ -235,7 +248,7 @@ def run_and_settle(log_mark: int, timeout=900, grace=22, start_wait=120):
     started = False
     while time.time() - t0 < start_wait:
         fi = api_clients().get("file_info", {})
-        if fi.get("status") == "copying":
+        if fi.get("status") in BUSY_STATES:
             started = True
             break
         if any(k in log_since(log_mark) for k in
@@ -254,7 +267,7 @@ def run_and_settle(log_mark: int, timeout=900, grace=22, start_wait=120):
             fi = c.get("file_info", {})
             samples.append((fi.get("progress", 0.0), fi.get("copied_bytes", 0),
                             fi.get("total_bytes", 0), fi.get("status")))
-            if fi.get("status") != "copying":
+            if fi.get("status") not in BUSY_STATES:
                 break
             time.sleep(0.3)
 
@@ -268,7 +281,7 @@ def run_and_settle(log_mark: int, timeout=900, grace=22, start_wait=120):
                             fi.get("total_bytes", 0), fi.get("status")))
             time.sleep(0.3)
         if log_len() == before and \
-                api_clients().get("file_info", {}).get("status") != "copying":
+                api_clients().get("file_info", {}).get("status") not in BUSY_STATES:
             break
         if time.time() - t1 > timeout:
             break
@@ -323,6 +336,10 @@ def assert_progress_honest(r: Result, samples, log_text=None, expect_total=None)
                 f"declared copy scope == {expect_total} bytes", f"logged={totals}")
 
 
+SUCCESS_STATES = ("found", "copy_complete")
+BUSY_STATES = ("copying", "unzipping")
+
+
 def count_runs(log_text: str) -> dict:
     return {
         "unzip_exec": log_text.count("[UNZIP] Executing extraction..."),
@@ -336,7 +353,7 @@ def count_runs(log_text: str) -> dict:
 
 # ---------------------------------------------------------------- test cases
 
-def t_full(src, label, expect_key):
+def t_full(src, label, expect_key, expect_busy):
     r = Result(label)
     n0 = reset(src)
     api_send(DEST, src)
@@ -346,6 +363,9 @@ def t_full(src, label, expect_key):
     st = dest_state()
 
     r.check(started, "client picked up the work")
+    seen_busy = {st for _, _, _, st in samples if st in BUSY_STATES}
+    r.check(expect_busy in seen_busy or not seen_busy,
+            f"in-progress status is '{expect_busy}'", f"seen={sorted(seen_busy)}")
     r.check(st.get("FILES") == str(FULL_FILES), f"all {FULL_FILES} files present",
             f"got {st.get('FILES')}")
     r.check(st.get("BYTES") == str(FULL_BYTES), f"on-disk bytes == {FULL_BYTES}",
@@ -362,13 +382,13 @@ def t_full(src, label, expect_key):
     r.check(runs["gave_up"] == 0, "no give-up triggered")
     assert_progress_honest(r, samples, log_text=log, expect_total=FULL_BYTES)
     fi = c.get("file_info", {})
-    r.check(fi.get("status") != "copying", "settled (not stuck copying)",
+    r.check(fi.get("status") in SUCCESS_STATES, "final status is success",
             f"status={fi.get('status')}")
-    clean_dest()
+    finish()
     return r
 
 
-def t_delta(src, label, expect_key, broken):
+def t_delta(src, label, expect_key, broken, expect_busy):
     """broken: dict rel -> 'delete' | int(truncate_to)"""
     r = Result(label)
     # stage 1: get to a complete destination
@@ -404,6 +424,9 @@ def t_delta(src, label, expect_key, broken):
     st = dest_state()
 
     r.check(started, "client noticed the broken files and started a repair")
+    seen_busy = {st for _, _, _, st in samples if st in BUSY_STATES}
+    r.check(expect_busy in seen_busy or not seen_busy,
+            f"in-progress status is '{expect_busy}'", f"seen={sorted(seen_busy)}")
     r.check(st.get("FILES") == str(FULL_FILES), "destination complete again",
             f"files={st.get('FILES')}")
     r.check(st.get("BYTES") == str(FULL_BYTES), f"on-disk bytes back to {FULL_BYTES}",
@@ -419,7 +442,7 @@ def t_delta(src, label, expect_key, broken):
     r.check(expect_bytes < FULL_BYTES / 10,
             "delta scope is a small fraction of the installer",
             f"{expect_bytes} vs {FULL_BYTES}")
-    clean_dest()
+    finish()
     return r
 
 
@@ -445,8 +468,19 @@ def t_unsatisfiable():
             f"unzip_exec={runs['unzip_exec']}")
     r.check("does not provide: tools.fv" in log,
             "give-up names the actually-missing file")
-    r.check("Missing files not found in source: tools.fv" in log,
+    r.check("Not present in source: tools.fv" in log,
             "delta extraction reported the unresolved file")
+
+    # The extract itself finished and emmcdl.exe IS there, so under the
+    # "finished == success, anomalies go in the warning" rule this must NOT read FAILED.
+    r.check(fi.get("status") in SUCCESS_STATES,
+            "status is success (the extract completed; the file is just absent upstream)",
+            f"status={fi.get('status')}")
+    r.check(not (fi.get("error_msg") or ""), "no error message",
+            f"error_msg={fi.get('error_msg')!r}")
+    warn = fi.get("warning_msg") or ""
+    r.check("tools.fv" in warn, "warning names the unavailable file",
+            f"warning_msg={warn[:110]}")
 
     # and it must STAY stopped
     before = runs["unzip_exec"]
@@ -454,18 +488,423 @@ def t_unsatisfiable():
     after = count_runs(log_since(n0))["unzip_exec"]
     r.check(after == before, "stays stopped after giving up (no further attempts)",
             f"{before} -> {after}")
-    clean_dest()
+    finish()
+    return r
+
+
+def t_no_manifests():
+    """Source provides no rawprogram0.xml / WDFlash.xml at all.
+
+    Re-fetching can never produce them, so this must NOT end up FAILED. The installer is
+    reported ready and the operator gets a warning naming the absent manifests instead.
+    """
+    r = Result("T6 source has no manifests -> ready WITH warning, not FAILED")
+    n0 = reset(SRC_ZIP_NOXML)
+    api_send(DEST, SRC_ZIP_NOXML)
+    c, samples, started = run_and_settle(n0)
+    log = log_since(n0)
+    runs = count_runs(log)
+    fi = c.get("file_info", {})
+    st = dest_state()
+
+    r.check(started, "client picked up the work")
+    r.check(fi.get("status") in SUCCESS_STATES,
+            "final status is success, not failed", f"status={fi.get('status')}")
+    r.check(not (fi.get("error_msg") or ""), "no error message",
+            f"error_msg={fi.get('error_msg')!r}")
+
+    warn = fi.get("warning_msg") or ""
+    r.check("rawprogram0.xml" in warn and "WDFlash.xml" in warn,
+            "warning names both absent manifests", f"warning_msg={warn[:110]}")
+    r.check("does not provide" in warn, "warning explains the source lacks them")
+    r.check("[FILE_INFO WARNING]" in log, "warning recorded in the client log")
+
+    r.check(runs["gave_up"] == 0, "convergence guard never latched",
+            f"gave_up={runs['gave_up']}")
+    r.check(runs["unzip_exec"] == 1, "extracted exactly once (no retry loop)",
+            f"unzip_exec={runs['unzip_exec']}")
+    # everything the source DOES have must still land
+    r.check(st.get("FILES") == "20", "all 20 non-manifest files present",
+            f"got {st.get('FILES')}")
+    r.check(st.get("DIRS") == str(FULL_SUBDIRS), "subfolder structure preserved",
+            f"got {st.get('DIRS')}")
+
+    # and it must stay ready, not flip back to failed
+    time.sleep(20)
+    later = api_clients().get("file_info", {})
+    r.check(later.get("status") in ("found", "copy_complete"),
+            "still ready 20s later (does not relapse to FAILED)",
+            f"status={later.get('status')}")
+    r.check(count_runs(log_since(n0))["unzip_exec"] == 1,
+            "no further extraction attempts")
+    finish()
+    return r
+
+
+def t_missing_is_success_with_warning():
+    """A required file missing at the destination must read SUCCESS + warning.
+
+    auto_flash is left OFF for the observation window on purpose: with it on, the delta
+    repair fixes the file within a couple of seconds and the interesting state is gone
+    before it can be sampled. This isolates "how is an incomplete installer reported"
+    from "does it get repaired" (T2/T4 cover the repair).
+    """
+    r = Result("T7 missing file -> SUCCESS with warning (no repair running)")
+    m0 = reset(SRC_ZIP)
+    api_send(DEST, SRC_ZIP)
+    c, _, _ = run_and_settle(m0)
+    if dest_state().get("BYTES") != str(FULL_BYTES):
+        r.check(False, "precondition: complete destination")
+        clean_dest()
+        return r
+
+    # stop acting, then break two required files: one at the root, one in a subfolder
+    quiesce(SRC_ZIP)
+    victims = [r"tools.fv", r"nor_oob\gpt_main0.bin"]
+    remote_ps("\n".join(
+        f"Remove-Item (Join-Path '{DEST}' '{v}') -Force" for v in victims))
+    r.check(file_size(victims[0]) == "MISSING", "root file really deleted")
+    r.check(file_size(victims[1]) == "MISSING", "subfolder file really deleted")
+
+    # let the 2s file-status check observe the incomplete installer
+    time.sleep(12)
+    fi = api_clients().get("file_info", {})
+
+    r.check(fi.get("status") in SUCCESS_STATES,
+            "status is SUCCESS despite the missing files",
+            f"status={fi.get('status')}")
+    r.check(fi.get("status") != "copy_failed", "status is NOT failed")
+    r.check(not (fi.get("error_msg") or ""),
+            "no error message", f"error_msg={fi.get('error_msg')!r}")
+
+    warn = fi.get("warning_msg") or ""
+    r.check(bool(warn), "a warning is present", f"warning_msg={warn[:100]}")
+    for v in victims:
+        r.check(v in warn, f"warning names {v}", f"warning_msg={warn[:150]}")
+    r.check("Missing" in warn, "warning says the files are missing",
+            f"warning_msg={warn[:100]}")
+
+    finish()
+    return r
+
+
+def t_resume(src, label, expect_key, expect_resume_marker):
+    """Interrupt a full copy/extract partway, then let it run again.
+
+    The second attempt must SKIP what is already on disk instead of redoing the whole
+    installer. Before this, any interruption threw away all progress and restarted from
+    file #1 -- on the real 36 GB installer that meant losing 25 minutes of work.
+    """
+    r = Result(label)
+    n0 = reset(src)
+    api_send(DEST, src)
+
+    # let it get properly under way, then stop it mid-flight
+    started = False
+    t0 = time.time()
+    while time.time() - t0 < 90:
+        if api_clients().get("file_info", {}).get("status") in BUSY_STATES:
+            started = True
+            break
+        time.sleep(0.5)
+    time.sleep(2.5)                      # let some files land
+    quiesce(src)                         # auto_flash=0 -> cancels the in-flight copy
+
+    partial_b = int(dest_state().get("BYTES") or 0)
+    r.check(started, "first attempt started")
+    r.check(0 < partial_b < FULL_BYTES,
+            "destination is partially populated after the interruption",
+            f"{partial_b} of {FULL_BYTES}")
+    if not (0 < partial_b < FULL_BYTES):
+        finish()
+        return r
+
+    # second attempt: must resume, not restart
+    n1 = log_len()
+    api_send(DEST, src)
+    c, samples, started2 = run_and_settle(n1)
+    log = log_since(n1)
+    runs = count_runs(log)
+    st = dest_state()
+
+    r.check(started2, "second attempt started")
+    r.check(expect_resume_marker in log,
+            "second attempt reports resuming (skipped already-present files)",
+            f"marker={expect_resume_marker!r}")
+
+    scopes = log_exact_totals(log)
+    if expect_key == "folder_start":
+        r.check(scopes and all(v < FULL_BYTES for v in scopes),
+                "second attempt's scope is SMALLER than the whole installer",
+                f"logged={scopes} vs full={FULL_BYTES}")
+
+    r.check(st.get("FILES") == str(FULL_FILES), "destination complete after resume",
+            f"got {st.get('FILES')}")
+    r.check(st.get("BYTES") == str(FULL_BYTES), f"on-disk bytes == {FULL_BYTES}",
+            f"got {st.get('BYTES')}")
+    r.check(st.get("DIRS") == str(FULL_SUBDIRS), "subfolder structure intact",
+            f"got {st.get('DIRS')}")
+    r.check(c.get("file_info", {}).get("status") in SUCCESS_STATES,
+            "final status is success",
+            f"status={c.get('file_info', {}).get('status')}")
+    finish()
+    return r
+
+
+def t_zip_resume_deterministic():
+    """ZIP extraction must skip files already present at the right size.
+
+    Interrupting mid-extract is not a usable trigger here: the synthetic archive extracts
+    in ~2s, faster than the harness can observe a partial state. So instead of racing it,
+    this sets up the partial state directly - start from a complete destination, then
+    delete EMMCDL.exe (which breaks the skeleton and therefore forces a FULL extract
+    rather than a delta) plus one more file. A full extract over an almost-complete
+    destination must report resuming and re-extract only the two gaps.
+    """
+    r = Result("T9 zip extract skips already-present files (resume mechanism)")
+    m0 = reset(SRC_ZIP)
+    api_send(DEST, SRC_ZIP)
+    c, _, _ = run_and_settle(m0)
+    if dest_state().get("BYTES") != str(FULL_BYTES):
+        r.check(False, "precondition: complete destination")
+        finish()
+        return r
+
+    quiesce(SRC_ZIP)
+    victims = ["EMMCDL.exe", r"nor_oob\gpt_main0.bin"]
+    remote_ps("\n".join(
+        f"Remove-Item (Join-Path '{DEST}' '{v}') -Force" for v in victims))
+    gap = SZ["EMMCDL.exe"] + SZ[r"nor_oob\gpt_main0.bin"]
+
+    n1 = log_len()
+    api_send(DEST, SRC_ZIP)
+    c, samples, started = run_and_settle(n1)
+    log = log_since(n1)
+    runs = count_runs(log)
+    st = dest_state()
+
+    r.check(started, "extraction started")
+    r.check(runs["unzip_exec"] >= 1, "a full extraction ran (not a delta)",
+            f"unzip_exec={runs['unzip_exec']}, delta={runs['delta_folder']}")
+    r.check("[UNZIP] Resuming:" in log,
+            "extraction reports resuming (skipped already-present files)")
+
+    scopes = log_exact_totals(log)
+    r.check(gap in scopes,
+            f"re-extracted only the {len(victims)} gaps ({gap} bytes), not all "
+            f"{FULL_BYTES}", f"logged={scopes}")
+
+    r.check(st.get("FILES") == str(FULL_FILES), "destination complete again",
+            f"got {st.get('FILES')}")
+    r.check(st.get("BYTES") == str(FULL_BYTES), f"on-disk bytes == {FULL_BYTES}",
+            f"got {st.get('BYTES')}")
+    for v in victims:
+        r.check(file_size(v) == SZ[v], f"restored {v} to {SZ[v]}", f"got {file_size(v)}")
+    r.check(c.get("file_info", {}).get("status") in SUCCESS_STATES,
+            "final status is success",
+            f"status={c.get('file_info', {}).get('status')}")
+    finish()
+    return r
+
+
+def t_insufficient_space():
+    """Not enough disk space must be a WARNING, never FAIL/ERROR.
+
+    Space is squeezed artificially with a large filler file so the source cannot fit, then
+    released. Before this, the copy ran until CopyFileEx returned 112 (ERROR_DISK_FULL),
+    which surfaced as a red "Extraction Error" and left a truncated file behind.
+    """
+    r = Result("T10 insufficient disk space -> warning, not FAIL")
+    n0 = reset(SRC_ZIP)
+    filler = r"C:\af_test\__spacefill.tmp"
+
+    # leave less free space than the synthetic installer needs
+    need_mb = FULL_BYTES // (1024 * 1024) + 1
+    out = remote_ps(f"""
+$free = (Get-PSDrive C).Free
+$leave = {need_mb}MB / 2
+$size = [int64]($free - $leave)
+if ($size -lt 1MB) {{ Write-Output 'SKIP_NO_ROOM'; exit }}
+fsutil file createnew '{filler}' $size | Out-Null
+Write-Output ('filled=' + $size)
+Write-Output ('free_now_MB=' + [math]::Round((Get-PSDrive C).Free/1MB,1))
+""")
+    if "SKIP_NO_ROOM" in out:
+        r.check(False, "could not set up the low-space condition", out[:120])
+        return r
+    print(f"      setup: {' '.join(out.split())[:140]}")
+
+    try:
+        api_send(DEST, SRC_ZIP)
+        got = wait_for_log(n0, "[COPY WARNING]", timeout=180)
+        time.sleep(4)
+        log = log_since(n0)
+        fi = api_clients().get("file_info", {})
+
+        r.check(got, "client reported a space warning")
+        r.check("Not enough disk space" in log or "Disk filled up" in log,
+                "log explains it is a space problem")
+        r.check(fi.get("status") != "copy_failed",
+                "status is NOT copy_failed", f"status={fi.get('status')}")
+        r.check(not (fi.get("error_msg") or ""),
+                "no error message shown to the operator",
+                f"error_msg={fi.get('error_msg')!r}")
+        warn = fi.get("warning_msg") or ""
+        r.check("disk space" in warn.lower() or "disk filled" in warn.lower(),
+                "warning mentions disk space", f"warning_msg={warn[:130]}")
+        r.check("short by" in warn, "warning says how much more space is needed",
+                f"warning_msg={warn[:130]}")
+    finally:
+        remote_ps(f"Remove-Item '{filler}' -Force -ErrorAction SilentlyContinue")
+
+    # after freeing space it must recover on its own and finish
+    recovered = False
+    t0 = time.time()
+    while time.time() - t0 < 300:
+        st = dest_state()
+        if st.get("BYTES") == str(FULL_BYTES):
+            recovered = True
+            break
+        time.sleep(5)
+    r.check(recovered, "copy completes on its own once space is freed",
+            f"dest bytes={dest_state().get('BYTES')}")
+    fi = api_clients().get("file_info", {})
+    r.check(fi.get("status") in SUCCESS_STATES, "final status is success",
+            f"status={fi.get('status')}")
+    finish()
+    return r
+
+
+def t_stale_warning_cleared():
+    """A new copy must not inherit the previous run's warning.
+
+    Reproduces the reported symptom: provoke a disk-space warning, free the space, then
+    start a fresh copy - the UI showed status COPYING while still displaying the old
+    "Not enough disk space" text, because the note was only cleared on success paths and
+    never at the start of a new attempt.
+    """
+    r = Result("T11 new copy clears the previous warning")
+    filler = r"C:\af_test\__spacefill2.tmp"
+    n0 = reset(SRC_ZIP)
+
+    need_mb = FULL_BYTES // (1024 * 1024) + 1
+    out = remote_ps(f"""
+$free = (Get-PSDrive C).Free
+$size = [int64]($free - ({need_mb}MB / 2))
+if ($size -lt 1MB) {{ Write-Output 'SKIP_NO_ROOM'; exit }}
+fsutil file createnew '{filler}' $size | Out-Null
+Write-Output 'filled'
+""")
+    if "SKIP_NO_ROOM" in out:
+        r.check(False, "could not set up the low-space condition")
+        return r
+
+    got_warning = False
+    try:
+        api_send(DEST, SRC_ZIP)
+        got_warning = wait_for_log(n0, "[COPY WARNING]", timeout=180)
+        # poll rather than sample once: the retrigger republishes status every ~2s, so a
+        # single read can land between updates
+        warn = ""
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            warn = (api_clients().get("file_info", {}).get("warning_msg") or "")
+            if "disk space" in warn.lower():
+                break
+            time.sleep(1)
+        r.check(got_warning and "disk space" in warn.lower(),
+                "precondition: a disk-space warning is showing",
+                f"warning_msg={warn[:90]}")
+    finally:
+        remote_ps(f"Remove-Item '{filler}' -Force -ErrorAction SilentlyContinue")
+
+    if not got_warning:
+        finish()
+        return r
+
+    # now start a fresh copy to a DIFFERENT destination, as the user did
+    dest2 = r"C:\af_test\dest_fresh"
+    remote_ps(f"if (Test-Path '{dest2}') {{ Remove-Item '{dest2}' -Recurse -Force }}")
+    quiesce(SRC_ZIP)
+    n1 = log_len()
+    api_send(dest2, SRC_ZIP)
+
+    # Sample while it is actively working - that is when the stale text was visible.
+    #
+    # Do NOT stop at the first busy->idle transition: that transition can belong to the
+    # PREVIOUS destination's copy finishing (the retrigger is still winding down), so the
+    # new destination would not exist yet. Wait for the new destination itself to complete.
+    def dest2_bytes():
+        o = remote_ps(f"""
+if (-not (Test-Path '{dest2}')) {{ Write-Output 'B=0'; exit }}
+$f = @(Get-ChildItem '{dest2}' -Recurse -File)
+$s = 0; foreach ($x in $f) {{ $s += $x.Length }}
+Write-Output ('B=' + $s)
+""")
+        for ln in o.splitlines():
+            if ln.startswith("B="):
+                try: return int(ln[2:])
+                except ValueError: pass
+        return 0
+
+    seen_busy, stale, done_bytes = False, [], 0
+    t0 = time.time()
+    ticks = 0
+    while time.time() - t0 < 240:
+        fi = api_clients().get("file_info", {})
+        st = fi.get("status")
+        w = fi.get("warning_msg") or ""
+        if st in BUSY_STATES:
+            seen_busy = True
+            if "disk space" in w.lower():
+                stale.append(w[:70])
+        ticks += 1
+        if ticks % 12 == 0:
+            done_bytes = dest2_bytes()
+            if done_bytes == FULL_BYTES:
+                break
+        time.sleep(0.4)
+
+    r.check(seen_busy, "the fresh copy actually started")
+    r.check(not stale, "no stale space warning while the new copy runs",
+            f"{len(stale)} sample(s), e.g. {stale[:1]}")
+
+    fi = api_clients().get("file_info", {})
+    final_warn = fi.get("warning_msg") or ""
+    r.check("disk space" not in final_warn.lower(),
+            "no stale space warning after the new copy finishes",
+            f"warning_msg={final_warn[:90]}")
+    # Assert on the destination contents, not the transient status: this test switches
+    # installer_path to a second destination, and the harness's own cleanup switches it
+    # back, so the reported status can legitimately be 'not_found' by the time we read it.
+    got_bytes = done_bytes if done_bytes == FULL_BYTES else dest2_bytes()
+    r.check(got_bytes == FULL_BYTES, "fresh copy landed a complete installer",
+            f"{got_bytes} of {FULL_BYTES}")
+
+    remote_ps(f"if (Test-Path '{dest2}') {{ Remove-Item '{dest2}' -Recurse -Force }}")
+    finish()
     return r
 
 
 TESTS = {
-    "T1": lambda: t_full(SRC_ZIP, "T1 zip source, full extraction", "unzip_exec"),
+    "T1": lambda: t_full(SRC_ZIP, "T1 zip source, full extraction", "unzip_exec",
+                         "unzipping"),
     "T2": lambda: t_delta(SRC_ZIP, "T2 zip source, delta repair", "unzip_exec",
-                          {r"nor_oob\gpt_main0.bin": "delete", r"tools.fv": 1000}),
-    "T3": lambda: t_full(SRC_FOLDER, "T3 folder source, full copy", "folder_start"),
+                          {r"nor_oob\gpt_main0.bin": "delete", r"tools.fv": 1000},
+                          "unzipping"),
+    "T3": lambda: t_full(SRC_FOLDER, "T3 folder source, full copy", "folder_start",
+                         "copying"),
     "T4": lambda: t_delta(SRC_FOLDER, "T4 folder source, delta repair", "delta_folder",
-                          {r"nor_oob\zeros_1sector.bin": "delete", r"gpt_main0.bin": 99}),
+                          {r"nor_oob\zeros_1sector.bin": "delete", r"gpt_main0.bin": 99},
+                          "copying"),
     "T5": t_unsatisfiable,
+    "T6": t_no_manifests,
+    "T7": t_missing_is_success_with_warning,
+    "T8": lambda: t_resume(SRC_FOLDER, "T8 folder copy resumes after interruption",
+                           "folder_start", "[resuming:"),
+    "T9": t_zip_resume_deterministic,
+    "T10": t_insufficient_space,
+    "T11": t_stale_warning_cleared,
 }
 
 

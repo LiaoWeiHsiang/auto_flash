@@ -29,6 +29,10 @@ public:
     bool server_get_auto_flash_status() const;
     bool heart_beat() const;
 
+    // 本機 WebUI 也能開關 auto_flash，所以需要一個 setter。
+    // auto_flash_ 是 atomic，從別的執行緒設定是安全的。
+    void set_auto_flash(bool v) { auto_flash_ = v; }
+
     int heart_beat_count = 0;
     std::string installer_path = "";
     std::string download_path = "";

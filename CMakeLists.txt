@@ -49,12 +49,30 @@ set(COMMON_LIBS
 if (BUILD_AUTO_FLASH)
     set(AUTO_FLASH_SOURCES
         auto_flash/auto_flash.cpp
+        auto_flash/local_server.cpp
         utils/talker/talker.cpp
         utils/socket/socket.cpp
         utils/listener/listener.cpp
         utils/zip/unzip.cpp
         ${COMMON_SOURCES}
     )
+
+    # 把 host_server/index.html 內嵌進 exe，讓 client 自己就能提供本機 WebUI。
+    # 這個 client 的部署方式是「curl 一個 exe」，若改成執行時讀取相鄰的
+    # index.html，只要有人忘記一起複製，本機 UI 就會默默失效。
+    set(AF_INDEX_HTML_H ${CMAKE_BINARY_DIR}/generated/index_html.h)
+    add_custom_command(
+        OUTPUT ${AF_INDEX_HTML_H}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/embed_file.py
+                ${CMAKE_SOURCE_DIR}/host_server/index.html
+                ${AF_INDEX_HTML_H} kIndexHtml
+        DEPENDS ${CMAKE_SOURCE_DIR}/host_server/index.html
+                ${CMAKE_SOURCE_DIR}/tools/embed_file.py
+        COMMENT "Embedding index.html into auto_flash for the local WebUI"
+        VERBATIM
+    )
+    list(APPEND AUTO_FLASH_SOURCES ${AF_INDEX_HTML_H})
 
     # VERSIONINFO + manifest resource: unsigned MinGW binaries with no
     # version/company metadata are a common Defender ML heuristic false
@@ -73,6 +91,9 @@ if (BUILD_AUTO_FLASH)
         ${AUTO_FLASH_INCLUDE_DIRS}
         ${COMMON_INCLUDE_DIRS}
         ${UTILS_INCLUDE_DIRS}
+        ${HOST_SERVER_INCLUDE_DIRS}                       # httplib.h
+        ${CMAKE_SOURCE_DIR}/third_party/json/single_include
+        ${CMAKE_BINARY_DIR}/generated                     # index_html.h
     )
 
     target_link_libraries(auto_flash PRIVATE

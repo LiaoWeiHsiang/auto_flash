@@ -28,6 +28,36 @@ inline std::string ts()
     return os.str();
 }
 
+// ===== 路徑正規化 =====
+// 使用者從 Windows 檔案總管「複製檔案位址」貼進 Web UI 時，字串頭尾會帶一對
+// 雙引號（"C:\path"）；也有人習慣自己加單引號。這種路徑直接拿去
+// std::filesystem 會找不到檔案，而且錯誤訊息看起來像路徑不存在，很難查。
+// 這裡去掉頭尾的空白與成對引號，路徑中間的引號保留不動。
+// Web UI 也會做一次，但 /send 可以被任何東西 POST，所以後端要自己擋。
+inline std::string strip_surrounding_quotes(std::string s)
+{
+    auto trim = [](std::string& v) {
+        const char* ws = " \t\r\n";
+        size_t b = v.find_first_not_of(ws);
+        if (b == std::string::npos) { v.clear(); return; }
+        size_t e = v.find_last_not_of(ws);
+        v = v.substr(b, e - b + 1);
+    };
+
+    trim(s);
+    while (s.size() >= 2) {
+        char first = s.front();
+        char last  = s.back();
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            s = s.substr(1, s.size() - 2);
+            trim(s);
+        } else {
+            break;
+        }
+    }
+    return s;
+}
+
 enum MsgType {
     MSG_HEART_BEAT,
     MSG_AUTO_FLASH_STATUS,
@@ -74,13 +104,17 @@ enum class ComportStatus{
 enum class FileStatus {
     NOT_FOUND,          // installer_path does not exist
     FOUND,              // installer_path exists and emmcdl.exe is present
-    COPYING,            // Currently copying / extracting
+    COPYING,            // Currently copying a folder source
     COPY_COMPLETE,      // Copy completed
     COPY_FAILED,        // Copy / extraction failed
     PATH_NOT_A_FOLDER,  // installer_path exists but is not a directory
     WAITING_FOR_COPY,   // installer_path exists (folder) but emmcdl.exe not found, waiting for copy
     // NOTE: append new values at the END only (same reasoning as MsgType above).
-    MISSING_FILES       // emmcdl.exe present, but files required by rawprogram0.xml/WDFlash.xml are missing
+    MISSING_FILES,      // DEPRECATED: no longer set. Incomplete installers are now
+                        // reported as FOUND/COPY_COMPLETE plus warning_msg -- success
+                        // means "the copy/extract finished", not "nothing is missing".
+                        // Kept so old servers keep decoding the enum consistently.
+    UNZIPPING           // Currently extracting a ZIP source
 };
 
 // ===== Flash target configuration =====
@@ -191,6 +225,22 @@ struct FileInfo {
     double speed_mbps = 0.0;       // Copy speed in MB/s
     int eta_seconds = 0;           // Estimated time remaining
     std::string error_msg;         // Error message if failed
+
+    // 非致命提示，狀態仍然是 FOUND / COPY_COMPLETE。目前用於「來源根本沒有
+    // 提供 rawprogram0.xml / WDFlash.xml」——再重抓幾次也不會出現，所以不該
+    // 讓整個 installer 卡在 FAILED，但操作員必須看得到。
+    // 序列化時附加在 wire format 的最尾端：舊版 server 讀完 error_msg 就停止
+    // 解析，不會因為多出這一段而失敗。
+    std::string warning_msg;
+
+    // 已處理／總共要處理的檔案數。
+    //
+    // 光看位元組進度會讓人誤判：CopyFileEx 一開始就把目的檔案設成最終大小，
+    // 所以複製一個 34GB 的大檔時，檔案總管顯示的資料夾大小會立刻跳到接近完成，
+    // 而實際只寫了一部分。多一個「92/148」的檔案計數，一眼就看得出還在跑。
+    // 同樣附加在 wire format 尾端，舊版 server 解析到 warning_msg 就停，不受影響。
+    int current_file = 0;
+    int total_files = 0;
 };
 
 struct ComportInfo {

@@ -241,7 +241,8 @@ bool unzip_file(const std::string& zip_path,
                 UnzipProgressCallback progress_callback,
                 std::string* error_msg,
                 const std::vector<std::string>& only_names,
-                const std::atomic<bool>* cancel)
+                const std::atomic<bool>* cancel,
+                bool* out_insufficient_space)
 {
     std::cout << "[UNZIP] Starting to extract: " << zip_path << std::endl;
     std::cout << "[UNZIP] Destination: " << dest_path << std::endl;
@@ -334,6 +335,27 @@ bool unzip_file(const std::string& zip_path,
         "  foreach ($c in $cand) { $sel[$c.R.ToLower()] = $c }\n"
         "}\n"
         "$items = @($sel.Values)\n"
+        // 目的地已經有一份大小相同的檔案就跳過不重解。
+        //
+        // 這是「續傳」：以前中斷後下一輪會把整包重解一次（實測 44GB 要 6 分鐘以上），
+        // 已經寫好的檔案全部白做。判準用大小相同而不是逐位元組比對，理由與 folder
+        // 複製那邊一致（整包幾十 GB，讀完再比會比重解還慢），也跟
+        // validate_installer_files 判斷完整性的標準相同。
+        "$todo = New-Object System.Collections.ArrayList\n"
+        "$skipCount = 0\n"
+        "$skipBytes = [int64]0\n"
+        "foreach ($i in $items) {\n"
+        "  $p = Join-Path $dest $i.R\n"
+        "  if (Test-Path -LiteralPath $p) {\n"
+        "    $fi = Get-Item -LiteralPath $p -Force\n"
+        "    if (-not $fi.PSIsContainer -and $fi.Length -eq $i.E.Length) {\n"
+        "      $skipCount++; $skipBytes += [int64]$i.E.Length; continue\n"
+        "    }\n"
+        "  }\n"
+        "  [void]$todo.Add($i)\n"
+        "}\n"
+        "if ($skipCount -gt 0) { Write-Host \"SKIPPED_EXISTING:${skipCount}:${skipBytes}\" }\n"
+        "$items = @($todo)\n"
         "$totalFiles = $items.Count\n"
         "$totalBytes = [int64]0\n"
         "foreach ($i in $items) { $totalBytes += [int64]$i.E.Length }\n"
@@ -522,6 +544,65 @@ bool unzip_file(const std::string& zip_path,
                         // 等於真正寫到磁碟的位元組數」這個不變式。
                         std::cout << "[UNZIP] Total size: " << (total_bytes / 1024.0 / 1024.0)
                                   << " MB (exact bytes: " << total_bytes << ")" << std::endl;
+
+                        // 空間預檢。這個時點最準：total_bytes 已經扣掉續傳跳過的
+                        // 檔案，而且腳本還沒開始寫任何 entry，中止不會留下半截檔案。
+                        // 空間不夠就直接收手，交由呼叫端當成 warning 呈現。
+                        if (total_bytes > 0) {
+                            // std::filesystem::space() 在這個 MinGW 上會回報
+                            // available = (uintmax_t)-1 而且不設 error_code，等於
+                            // 「查不到」卻裝作成功，空間檢查因此完全失效（實測踩到）。
+                            // 改用 Win32 原生 API，它也支援 UNC 路徑。
+                            uint64_t avail_bytes = 0;
+                            bool have_space_info = false;
+                            {
+                                ULARGE_INTEGER avail{}, total_b{}, freeb{};
+                                std::wstring probe = abs_dest.wstring();
+                                if (!probe.empty() && probe.back() != L'\\') probe += L'\\';
+                                if (GetDiskFreeSpaceExW(probe.c_str(), &avail, &total_b, &freeb)) {
+                                    avail_bytes = static_cast<uint64_t>(avail.QuadPart);
+                                    have_space_info = true;
+                                }
+                            }
+                            const uint64_t margin = 256ull * 1024 * 1024;
+                            std::cout << "[UNZIP] Space check: need "
+                                      << (total_bytes + margin) << " bytes, available "
+                                      << (have_space_info ? std::to_string(avail_bytes)
+                                                          : std::string("<query failed>"))
+                                      << std::endl;
+                            if (have_space_info && avail_bytes < total_bytes + margin) {
+                                std::cout << "[UNZIP] Not enough disk space: needs "
+                                          << ((total_bytes + margin) / 1024.0 / 1024.0 / 1024.0)
+                                          << " GB, only " << (avail_bytes / 1024.0 / 1024.0 / 1024.0)
+                                          << " GB free - aborting before writing anything"
+                                          << std::endl;
+                                if (out_insufficient_space) *out_insufficient_space = true;
+                                if (error_msg) {
+                                    // 數字在這裡才是準的（total_bytes 已扣掉續傳跳過的
+                                    // 檔案），所以由這裡產生完整訊息，呼叫端直接沿用，
+                                    // 不要再自己算一份——重算過的那版實測印出 0.00 GB。
+                                    std::ostringstream o;
+                                    o << std::fixed << std::setprecision(2)
+                                      << "Not enough disk space: needs "
+                                      << ((total_bytes + margin) / 1024.0 / 1024.0 / 1024.0)
+                                      << " GB, only " << (avail_bytes / 1024.0 / 1024.0 / 1024.0)
+                                      << " GB free (short by "
+                                      << ((total_bytes + margin - avail_bytes) / 1024.0 / 1024.0 / 1024.0)
+                                      << " GB). Nothing was extracted; free up space and it will "
+                                         "continue automatically.";
+                                    *error_msg = o.str();
+                                }
+                                TerminateProcess(pi.hProcess, 1);
+                                WaitForSingleObject(pi.hProcess, 5000);
+                                CloseHandle(hRead);
+                                CloseHandle(pi.hProcess);
+                                CloseHandle(pi.hThread);
+                                std::error_code rec;
+                                std::filesystem::remove(temp_script, rec);
+                                return false;
+                            }
+                        }
+
                         // 立刻把正確的總量推給呼叫端。呼叫端在解壓開始前只能拿到
                         // 壓縮檔大小（跟解壓後的總量可能差幾百倍），不先更新的話
                         // UI 會拿錯誤的分母算進度，直到第一個 entry 解壓完為止。
@@ -564,6 +645,16 @@ bool unzip_file(const std::string& zip_path,
                       } catch (const std::exception& e) {
                           std::cout << "[UNZIP] Failed to parse PROGRESS line: \"" << line << "\" (" << e.what() << ")" << std::endl;
                       }
+                    }
+                }
+                else if (line.find("SKIPPED_EXISTING:") == 0) {
+                    // 續傳：目的地已經有同樣大小的檔案，這次不重解。
+                    std::string data = line.substr(17);
+                    size_t sep = data.find(':');
+                    if (sep != std::string::npos) {
+                        std::cout << "[UNZIP] Resuming: " << data.substr(0, sep)
+                                  << " file(s) already present ("
+                                  << data.substr(sep + 1) << " bytes), skipped" << std::endl;
                     }
                 }
                 else if (line.find("SKIP:") == 0) {
@@ -683,7 +774,8 @@ bool unzip_file(const std::string& zip_path,
                 UnzipProgressCallback progress_callback,
                 std::string* error_msg,
                 const std::vector<std::string>& only_names,
-                const std::atomic<bool>* cancel)
+                const std::atomic<bool>* cancel,
+                bool* out_insufficient_space)
 {
     std::cout << "[UNZIP] Starting to extract: " << zip_path << std::endl;
     std::cout << "[UNZIP] Destination: " << dest_path << std::endl;

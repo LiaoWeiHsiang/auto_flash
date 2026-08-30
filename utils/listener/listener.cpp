@@ -397,7 +397,10 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
 
         case MSG_INSTALLER_PATH:
         {
-            std::string installer_path_(data.begin(), data.end());
+            // 頭尾引號在這裡也擋一次：這是路徑真正被 std::filesystem 使用的地方，
+            // 送過來的可能是舊版 server 或其他工具，不保證已經正規化過。
+            std::string installer_path_ = strip_surrounding_quotes(
+                std::string(data.begin(), data.end()));
             bool changed = (installer_path != installer_path_);
             installer_path = installer_path_;
             auto& c = clients_map[ip];  // auto-create if not exist
@@ -409,7 +412,8 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
 
                 case MSG_DOWNLOAD_PATH:
         {
-            std::string download_path_(data.begin(), data.end());
+            std::string download_path_ = strip_surrounding_quotes(
+                std::string(data.begin(), data.end()));
             bool changed = (download_path != download_path_);
             download_path = download_path_;
             auto& c = clients_map[ip];  // auto-create if not exist
@@ -463,6 +467,27 @@ void Listener::dispatch(uint8_t type, uint32_t length, const std::vector<char>& 
             // Error message
             if (offset + error_len <= length) {
                 info.error_msg = std::string(data.data() + offset, error_len);
+                offset += error_len;
+
+                // Warning message（附加欄位，舊版 client 不會送）
+                // 長度不夠就當作沒有，不要把舊 client 的封包判成錯誤。
+                if (offset + sizeof(uint32_t) <= length) {
+                    uint32_t warning_len;
+                    memcpy(&warning_len, data.data() + offset, sizeof(uint32_t));
+                    offset += sizeof(uint32_t);
+                    if (offset + warning_len <= length) {
+                        info.warning_msg = std::string(data.data() + offset, warning_len);
+                        offset += warning_len;
+
+                        // File counters（再附加的欄位，同樣要容忍舊 client）
+                        if (offset + 2 * sizeof(int) <= length) {
+                            memcpy(&info.current_file, data.data() + offset, sizeof(int));
+                            offset += sizeof(int);
+                            memcpy(&info.total_files, data.data() + offset, sizeof(int));
+                            offset += sizeof(int);
+                        }
+                    }
+                }
             }
             
             auto& c = clients_map[ip];

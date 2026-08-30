@@ -176,15 +176,54 @@ input:checked + .slider:before {
   opacity: 0.9;
 }
 
+/* ===== Client row layout =====
+   分成兩個區塊：左邊是身分/狀態/選單（寬度固定，資訊密度高），
+   右邊是兩個路徑輸入框（吃掉所有剩餘寬度）。
+   視窗變窄時路徑會整排掉到下一行，而不是被壓成幾乎看不到的細長格子。 */
 .client-row {
   display: grid;
-  grid-template-columns: 40px 145px 125px 90px 85px 65px 110px 105px 140px minmax(0, 1.1fr) minmax(0, 1.1fr);
-  gap: 10px;
+  grid-template-columns: auto minmax(480px, 1fr);
+  gap: 14px 24px;
   padding: 20px 24px;
   align-items: center;
   cursor: pointer;
   transition: all 0.2s ease;
   border-bottom: 1px solid var(--border-color);
+}
+
+.row-main {
+  display: grid;
+  grid-template-columns: 40px 145px 125px 90px 85px 65px 110px 105px 140px;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.row-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 一般筆電寬度：路徑改成自己佔一整行，寬度直接變成原本的 2～3 倍 */
+@media (max-width: 1600px) {
+  .client-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 小螢幕 / 視窗分半：左邊的欄位也自動換行，兩個路徑上下排列。
+   1100px 這個界線是算出來的：左區固定寬 985px（9 欄 + 間距），加上
+   body 的 20px 與列的 24px 左右內距共 88px，低於 ~1073px 就會橫向溢出。 */
+@media (max-width: 1100px) {
+  .row-main {
+    grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr);
+    row-gap: 14px;
+  }
+  .row-paths {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .client-row:hover {
@@ -790,57 +829,65 @@ function renderClientsOnce(clients) {
     row.className = "client-row";
 
     row.innerHTML = `
-      <div class="expand-icon" onclick="toggleComports('${c.ip}', event)">▶</div>
-      <div class="client-ip">${c.ip}</div>
-      <div class="client-device">${c.device}</div>
-      <div class="heartbeat"></div>
-      <div class="auto"></div>
+      <div class="row-main">
+        <div class="expand-icon" onclick="toggleComports('${c.ip}', event)">▶</div>
+        <div class="client-ip">${c.ip}</div>
+        <div class="client-device">${c.device}</div>
+        <div class="heartbeat"></div>
+        <div class="auto"></div>
 
-      <label class="switch" onclick="event.stopPropagation()">
-        <input type="checkbox" class="toggle-switch"
-          onchange="sendConfigToCPP('${c.ip}', this.checked)">
-        <span class="slider"></span>
-      </label>
+        <label class="switch" onclick="event.stopPropagation()">
+          <input type="checkbox" class="toggle-switch"
+            onchange="sendConfigToCPP('${c.ip}', this.checked)">
+          <span class="slider"></span>
+        </label>
 
-      <div class="path-input-group" onclick="event.stopPropagation()">
-        <div class="path-label">🔧 Chipset</div>
-        <select class="chipset select-input"
-                onchange="onChipsetChange('${c.ip}')">
-          <option value="kenai">Kenai</option>
-          <option value="hamoa">Hamoa</option>
-          <option value="glymur">Glymur</option>
-        </select>
+        <div class="path-input-group" onclick="event.stopPropagation()">
+          <div class="path-label">🔧 Chipset</div>
+          <select class="chipset select-input"
+                  onchange="onChipsetChange('${c.ip}')">
+            <option value="kenai">Kenai</option>
+            <option value="hamoa">Hamoa</option>
+            <option value="glymur">Glymur</option>
+          </select>
+        </div>
+
+        <div class="path-input-group" onclick="event.stopPropagation()">
+          <div class="path-label">💽 Storage</div>
+          <select class="storage select-input"
+                  onchange="sendChipsetStorage('${c.ip}')">
+            <option value="nvme">NVME</option>
+            <option value="ufs">UFS</option>
+          </select>
+        </div>
+
+        <div class="path-input-group" onclick="event.stopPropagation()">
+          <div class="path-label">⚡ Stage</div>
+          <select class="stage select-input"
+                  onchange="sendChipsetStorage('${c.ip}')">
+            <option value="both">SPINOR + HLOS</option>
+            <option value="spinor_only">SPINOR only</option>
+            <option value="hlos_only">HLOS only</option>
+          </select>
+        </div>
       </div>
 
-      <div class="path-input-group" onclick="event.stopPropagation()">
-        <div class="path-label">💽 Storage</div>
-        <select class="storage select-input"
-                onchange="sendChipsetStorage('${c.ip}')">
-          <option value="nvme">NVME</option>
-          <option value="ufs">UFS</option>
-        </select>
-      </div>
+      <div class="row-paths">
+        <div class="path-input-group" onclick="event.stopPropagation()">
+          <div class="path-label">📁 Installer Path</div>
+          <input class="installer path-input" placeholder="Enter installer path..." value=""
+                 spellcheck="false" autocomplete="off"
+                 title="貼上路徑時頭尾的引號會自動移除"
+                 onblur="sendPathsOnly('${c.ip}')">
+        </div>
 
-      <div class="path-input-group" onclick="event.stopPropagation()">
-        <div class="path-label">⚡ Stage</div>
-        <select class="stage select-input"
-                onchange="sendChipsetStorage('${c.ip}')">
-          <option value="both">SPINOR + HLOS</option>
-          <option value="spinor_only">SPINOR only</option>
-          <option value="hlos_only">HLOS only</option>
-        </select>
-      </div>
-
-      <div class="path-input-group" onclick="event.stopPropagation()">
-        <div class="path-label">📁 Installer Path</div>
-        <input class="installer path-input" placeholder="Enter installer path..." value=""
-               onblur="sendPathsOnly('${c.ip}')">
-      </div>
-
-      <div class="path-input-group" onclick="event.stopPropagation()">
-        <div class="path-label">💾 Download Path</div>
-        <input class="download path-input" placeholder="Enter download path..." value=""
-               onblur="sendPathsOnly('${c.ip}')">
+        <div class="path-input-group" onclick="event.stopPropagation()">
+          <div class="path-label">💾 Download Path</div>
+          <input class="download path-input" placeholder="Enter download path..." value=""
+                 spellcheck="false" autocomplete="off"
+                 title="貼上路徑時頭尾的引號會自動移除"
+                 onblur="sendPathsOnly('${c.ip}')">
+        </div>
       </div>
     `;
 
@@ -916,15 +963,19 @@ function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
       break;
     case 'found':
       statusBadgeClass = 'file-status-found';
-      statusText = 'FOUND';
+      statusText = 'SUCCESS';
       break;
     case 'copying':
       statusBadgeClass = 'file-status-copying';
       statusText = 'COPYING';
       break;
+    case 'unzipping':
+      statusBadgeClass = 'file-status-copying';
+      statusText = 'UNZIPPING';
+      break;
     case 'copy_complete':
       statusBadgeClass = 'file-status-complete';
-      statusText = 'COMPLETE';
+      statusText = 'SUCCESS';
       break;
     case 'copy_failed':
       statusBadgeClass = 'file-status-failed';
@@ -954,8 +1005,35 @@ function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
       <span class="file-status-badge ${statusBadgeClass}">${statusText}</span>
     </div>
   `;
-  
-  if (fileInfo.status === 'copying') {
+
+  // 非致命警告（例如來源沒提供 rawprogram0.xml / WDFlash.xml）。
+  // 和狀態無關，任何狀態下都要顯示，所以放在狀態列之後、各狀態分支之前。
+  // 用琥珀色和紅色的錯誤區塊區分：這不是失敗，但操作員必須看到。
+  if (fileInfo.warning_msg) {
+    html += `
+      <div class="file-status-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+        <span style="font-weight:600; color:#92400e;">⚠️ Warning:</span>
+        <pre style="
+          margin: 0;
+          padding: 12px 16px;
+          background: linear-gradient(135deg, #1e293b, #0f172a);
+          color: #fde68a;
+          border-radius: 6px;
+          font-family: 'Fira Code', 'Courier New', monospace;
+          font-size: 12px;
+          white-space: pre-wrap;
+          word-break: break-word;
+          width: 100%;
+          max-height: 200px;
+          overflow-y: auto;
+          border: 1px solid #92400e;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        ">${escapeHtml(fileInfo.warning_msg)}</pre>
+      </div>
+    `;
+  }
+
+  if (fileInfo.status === 'copying' || fileInfo.status === 'unzipping') {
     const progressPercent = fileInfo.progress.toFixed(1);
     const speedMB = fileInfo.speed_mbps.toFixed(2);
     const totalMB = (fileInfo.total_bytes / (1024 * 1024)).toFixed(2);
@@ -975,6 +1053,11 @@ function updateFileStatus(ip, fileInfo, installerPath, downloadPath) {
         <span>📊 Progress:</span>
         <span>${copiedMB} MB / ${totalMB} MB</span>
       </div>
+      ${fileInfo.total_files ? `
+      <div class="file-status-item">
+        <span>📄 Files:</span>
+        <span>${fileInfo.current_file} / ${fileInfo.total_files}</span>
+      </div>` : ''}
       <div class="file-status-item">
         <span>⚡ Speed:</span>
         <span>${speedMB} MB/s</span>
@@ -1286,10 +1369,10 @@ async function update() {
             // 只有當 UI 上完全沒有值（且不是手動清空的）時才初始化一次
       // 之後只要標記為 dirty，就絕對不再受後端 c.installer_path 影響
       if (!instInput.dataset.dirty && !instInput.dataset.focus && instInput.value === "") {
-         if (c.installer_path) instInput.value = c.installer_path;
+         if (c.installer_path) instInput.value = normalizePath(c.installer_path);
       }
       if (!dlInput.dataset.dirty && !dlInput.dataset.focus && dlInput.value === "") {
-         if (c.download_path) dlInput.value = c.download_path;
+         if (c.download_path) dlInput.value = normalizePath(c.download_path);
       }
 
       // 回填 chipset / storage / stage（pending 期間不覆蓋使用者剛改的值）
@@ -1357,10 +1440,44 @@ async function update() {
   }
 }
 
+// ===== 路徑正規化 =====
+// 使用者常常直接用 Windows 的「複製檔案位址」貼上來，字串頭尾會多一對雙引號
+// （"C:\path"），也有人習慣自己加單引號。頭尾成對的引號一律去掉，路徑中間的
+// 引號不動。後端 /send 也會再做一次，這裡做是為了讓使用者馬上看到清乾淨的值。
+function normalizePath(value) {
+  let s = (value || "").trim();
+  while (s.length >= 2) {
+    const first = s[0];
+    const last = s[s.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      s = s.slice(1, -1).trim();
+    } else {
+      break;
+    }
+  }
+  return s;
+}
+
+// 就地清乾淨輸入框並回傳結果，讓送出的值和畫面上看到的一致
+function cleanPathInput(input) {
+  if (!input) return "";
+  const cleaned = normalizePath(input.value);
+  if (cleaned !== input.value) input.value = cleaned;
+  return cleaned;
+}
+
 // 只要有過 input 事件（包括清空），就鎖定 UI，不要讓後端舊資料填回來
 document.addEventListener("input", (e) => {
   if (e.target.tagName === "INPUT") {
     e.target.dataset.dirty = "1";
+  }
+});
+
+// 貼上後立刻把頭尾引號清掉（paste 事件時 value 還沒更新，所以延到下一個 tick）
+document.addEventListener("paste", (e) => {
+  const el = e.target;
+  if (el.tagName === "INPUT" && el.classList.contains("path-input")) {
+    setTimeout(() => cleanPathInput(el), 0);
   }
 });
 
@@ -1412,8 +1529,8 @@ async function sendChipsetStorage(ip) {
   // 不該連帶把 auto_flash 悄悄關掉。
   const payload = {
     ip: ip,
-    installer_path: instInput.value,
-    download_path: dlInput.value,
+    installer_path: cleanPathInput(instInput),
+    download_path: cleanPathInput(dlInput),
     chipset: chipsetSel.value,
     storage: storageSel.value,
     flash_stage: stageSel.value
@@ -1446,8 +1563,12 @@ async function sendPathsOnly(ip) {
   const storageSel = row.querySelector(".storage");
   const stageSel = row.querySelector(".stage");
 
+  // 先把頭尾引號清乾淨，再判斷是否為空（避免只輸入 "" 也被送出）
+  const installerPath = cleanPathInput(instInput);
+  const downloadPath = cleanPathInput(dlInput);
+
   // 如果兩個路徑都是空的，不送
-  if (!instInput.value && !dlInput.value) return;
+  if (!installerPath && !downloadPath) return;
 
   // 不帶 auto_flash 欄位：/send 只有在收到這個欄位時才會改動
   // server_get_auto_flash_status，省略它才能真正做到「不改變
@@ -1455,8 +1576,8 @@ async function sendPathsOnly(ip) {
   // /clients 輪詢同步過）的 DOM 狀態，把 auto_flash 悄悄關掉。
   const payload = {
     ip: ip,
-    installer_path: instInput.value,
-    download_path: dlInput.value,
+    installer_path: installerPath,
+    download_path: downloadPath,
     chipset: chipsetSel.value,
     storage: storageSel.value,
     flash_stage: stageSel.value
@@ -1490,8 +1611,8 @@ async function sendConfigToCPP(ip, isChecked) {
   const payload = {
     ip: ip,
     auto_flash: isChecked ? "1" : "0",
-    installer_path: instInput.value,
-    download_path: dlInput.value,
+    installer_path: cleanPathInput(instInput),
+    download_path: cleanPathInput(dlInput),
     chipset: chipsetSel.value,
     storage: storageSel.value,
     flash_stage: stageSel.value
