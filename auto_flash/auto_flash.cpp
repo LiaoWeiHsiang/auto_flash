@@ -1587,6 +1587,53 @@ std::string get_device_name()
     return "UNKNOWN_PC";
 }
 
+// 本機這台機器實際的 IP：跟 target_ip 建一個 UDP socket 再用 getsockname 反查，
+// 借用 OS 路由表算出「連到 target_ip 會用哪張介面卡的 IP」——UDP connect()
+// 不會真的送出封包，純粹是本機查表，跟遠端 host_server 用 accept() 看到的
+// 來源位址是同一個答案。失敗（例如網路還沒起來）回傳空字串讓呼叫端重試。
+std::string get_local_ip_facing(const std::string& target_ip)
+{
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s == INVALID_SOCKET) return "";
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9);  // discard port，只用來讓路由表選介面卡，不會真的送出
+    if (inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr) != 1) {
+        closesocket(s);
+        return "";
+    }
+
+    std::string result;
+    if (connect(s, (sockaddr*)&addr, sizeof(addr)) == 0) {
+        sockaddr_in local{};
+        int len = sizeof(local);
+        if (getsockname(s, (sockaddr*)&local, &len) == 0) {
+            char buf[INET_ADDRSTRLEN] = {0};
+            if (inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf)))
+                result = buf;
+        }
+    }
+    closesocket(s);
+    return result;
+}
+
+// target_ip 的反解主機名。只嘗試一次（DNS 查詢可能慢，不想每次 publish 都做），
+// 查不到（很多內網 IP 沒設 PTR record）就回空字串，畫面上只顯示 IP。
+std::string get_server_display_name(const std::string& target_ip)
+{
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    if (inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr) != 1)
+        return "";
+
+    char host[NI_MAXHOST] = {0};
+    if (getnameinfo((sockaddr*)&addr, sizeof(addr), host, sizeof(host), nullptr, 0, NI_NAMEREQD) == 0)
+        return std::string(host);
+
+    return "";
+}
+
 // bool is_folder_complete(const std::string& src_path, const std::string& dst_path) {
 //     try {
 //         if (!std::filesystem::exists(dst_path)) return false;
@@ -2418,9 +2465,34 @@ void com_monitor(const std::string& ip, Listener* listener)
 
         // ===== 把「送給遠端的同一份資料」也發佈給本機 WebUI =====
         // 發佈點放在迴圈尾端、所有封包都送完之後，本機看到的就跟遠端收到的一致。
+        //
+        // 這裡的 ip 顯示要跟遠端 host_server 的邏輯對齊：host_server 顯示的是
+        // accept() 看到的來源位址，也就是本機的 IP；如果本機 WebUI 直接照搬
+        // mirror.ip = ip（那是「要送去哪個 server」的目標位址，跟本機 IP是
+        // 兩個不同東西），就會看起來反過來。改成顯示本機 IP，同時保留
+        // target server 的 ip／反解主機名，讓 UI 在下面小字顯示「送去哪台」。
         {
+            static std::string cached_local_ip;
+            static bool local_ip_ready = false;
+            static std::string cached_server_name;
+            static bool server_name_tried = false;
+
+            if (!local_ip_ready) {
+                std::string resolved = get_local_ip_facing(ip);
+                if (!resolved.empty()) {
+                    cached_local_ip = resolved;
+                    local_ip_ready = true;
+                }
+            }
+            if (!server_name_tried) {
+                cached_server_name = get_server_display_name(ip);
+                server_name_tried = true;
+            }
+
             LocalMirrorState mirror;
-            mirror.ip = ip;
+            mirror.ip = local_ip_ready ? cached_local_ip : ip;  // 還沒查到本機 IP 前，先顯示目標 IP 免得空白
+            mirror.server_ip = ip;
+            mirror.server_name = cached_server_name;
             mirror.device = get_device_name();
             mirror.heartbeat = true;              // 這個迴圈還在跑就代表活著
             mirror.auto_flash = listener->auto_flash();

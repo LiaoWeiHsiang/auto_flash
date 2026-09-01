@@ -25,7 +25,9 @@
 
 // 這個 client 對外公佈的完整狀態（等同封包內容）。
 struct LocalMirrorState {
-    std::string ip;
+    std::string ip;            // 本機這台機器自己的 IP（跟遠端 host_server 顯示的一致）
+    std::string server_ip;     // 目前設定要把封包送去的目標 server IP（跟上面的 ip 是兩個不同東西）
+    std::string server_name;   // server_ip 的反解主機名；查不到就是空字串
     std::string device;
     bool heartbeat = false;
     bool auto_flash = false;

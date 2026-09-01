@@ -107,6 +107,8 @@ std::string clients_json()
 
         arr.push_back({
             {"ip", s.ip},
+            {"server_ip", s.server_ip},
+            {"server_name", s.server_name},
             {"device", s.device},
             {"heartbeat", s.heartbeat},
             {"auto_flash", s.auto_flash},

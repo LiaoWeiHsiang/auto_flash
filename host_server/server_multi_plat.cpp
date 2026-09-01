@@ -3,6 +3,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <algorithm>
 
 #include <fstream>
 #include <sstream>
@@ -59,6 +60,7 @@ std::string read_file(const std::string& path)
 
 // ===================== CONFIG =====================
 constexpr int HTTP_PORT = 8080;
+constexpr int DEAD_CLIENT_EXPIRY_SECONDS = 3600;  // dead 超過一小時就從清單移除
 
 // ===================== SEND =====================
 void set_auto_flash(const std::string& auto_flash,
@@ -215,12 +217,28 @@ private:
         std::lock_guard<std::mutex> lock(listener->clients_mutex);
 
         for (auto it = listener->clients_map.begin();
-            it != listener->clients_map.end();
-            ++it)
+            it != listener->clients_map.end(); )
         {
             auto& c = it->second;
 
             auto diff = duration_cast<seconds>(now - c.last_seen).count();
+
+            // dead 超過清除時限：整條移除。last_seen 只在收到 heartbeat 時更新
+            // （見 listener.cpp MSG_HEART_BEAT），所以 diff 就是「已經斷線多久」。
+            // 下次這個 IP 重新連線送出第一個 heartbeat，dispatch() 的
+            // clients_map[ip] 會 auto-create 出全新的 ClientInfo，等於重新生出來。
+            if (diff > DEAD_CLIENT_EXPIRY_SECONDS)
+            {
+                std::cout << "[EXPIRED] Client " << it->first
+                          << " removed (dead for " << diff << "s)\n";
+                listener->client_ip_list.erase(
+                    std::remove(listener->client_ip_list.begin(),
+                                listener->client_ip_list.end(),
+                                it->first),
+                    listener->client_ip_list.end());
+                it = listener->clients_map.erase(it);
+                continue;
+            }
 
             // 🔧 增加超時時間到 5 秒，避免網路延遲誤判
             if (diff > 5)
@@ -237,6 +255,8 @@ private:
                 }
                 c.heartbeat = true;
             }
+
+            ++it;
         }
     }
 
@@ -452,54 +472,66 @@ int main()
         std::string target_ip = j.value("ip", "");
         if (target_ip.empty()) return;
 
-        auto it = listener.clients_map.find(target_ip);
-        if (it == listener.clients_map.end()) return;
+        // clients_map 現在會被背景的 check_clients() 清掉 dead 超過一小時的
+        // client，find() 拿到的 iterator/reference 不再永遠有效——沒鎖的話，
+        // 有機會在讀寫 c 的中途剛好被清掉，變成用到已經釋放的記憶體。鎖只包住
+        // 讀寫 c 跟複製出本機變數這段，不含下面的 set_auto_flash()（見下方註解）。
+        std::string auto_flash_str, installer_path_copy, download_path_copy;
+        Chipset chipset_copy;
+        StorageType storage_copy;
+        FlashStage flash_stage_copy;
+        {
+            std::lock_guard<std::mutex> lock(listener.clients_mutex);
 
-        auto& c = it->second;
+            auto it = listener.clients_map.find(target_ip);
+            if (it == listener.clients_map.end()) return;
 
-        // ===== update state ONLY =====
-        if (j.contains("auto_flash"))
-            c.server_get_auto_flash_status = (j["auto_flash"] == "1");
+            auto& c = it->second;
 
-        // 路徑先去掉頭尾的引號再存。使用者常直接貼上 Windows「複製檔案位址」
-        // 的結果（"C:\path"），帶著引號的路徑到 client 會被當成不存在。
-        // 先正規化再判斷是否為空，這樣只輸入 "" 也不會覆蓋掉原本的設定。
-        if (j.contains("installer_path")) {
-            std::string p = strip_surrounding_quotes(j["installer_path"].get<std::string>());
-            if (!p.empty()) c.installer_path = p;
+            // ===== update state ONLY =====
+            if (j.contains("auto_flash"))
+                c.server_get_auto_flash_status = (j["auto_flash"] == "1");
+
+            // 路徑先去掉頭尾的引號再存。使用者常直接貼上 Windows「複製檔案位址」
+            // 的結果（"C:\path"），帶著引號的路徑到 client 會被當成不存在。
+            // 先正規化再判斷是否為空，這樣只輸入 "" 也不會覆蓋掉原本的設定。
+            if (j.contains("installer_path")) {
+                std::string p = strip_surrounding_quotes(j["installer_path"].get<std::string>());
+                if (!p.empty()) c.installer_path = p;
+            }
+
+            if (j.contains("download_path")) {
+                std::string p = strip_surrounding_quotes(j["download_path"].get<std::string>());
+                if (!p.empty()) c.download_path = p;
+            }
+
+            if (j.contains("chipset") && !j["chipset"].get<std::string>().empty())
+                c.chipset = chipset_from_string(j["chipset"]);
+
+            if (j.contains("storage") && !j["storage"].get<std::string>().empty())
+                c.storage = storage_from_string(j["storage"]);
+
+            if (j.contains("flash_stage") && !j["flash_stage"].get<std::string>().empty())
+                c.flash_stage = stage_from_string(j["flash_stage"]);
+
+            // Hamoa / Glymur are NVME only. Clamp here too, not just in the UI —
+            // /send can be POSTed by anything.
+            c.storage = clamp_storage(c.chipset, c.storage);
+
+            // ===== send command (ONLY ON CHANGE OR ALWAYS OK) =====
+            // Copy out of `c` before calling: set_auto_flash() takes these by
+            // const&, and Talker's connect() inside it blocks long enough for
+            // the client's own heartbeat thread (MSG_CLIENT_INSTALLER_PATH /
+            // MSG_CLIENT_DOWNLOAD_PATH) to overwrite clients_map[ip] with its
+            // stale value first — sending back exactly what we just tried to
+            // change. Local copies break that aliasing.
+            auto_flash_str = std::to_string(c.server_get_auto_flash_status);
+            installer_path_copy = c.installer_path;
+            download_path_copy = c.download_path;
+            chipset_copy = c.chipset;
+            storage_copy = c.storage;
+            flash_stage_copy = c.flash_stage;
         }
-
-        if (j.contains("download_path")) {
-            std::string p = strip_surrounding_quotes(j["download_path"].get<std::string>());
-            if (!p.empty()) c.download_path = p;
-        }
-
-        if (j.contains("chipset") && !j["chipset"].get<std::string>().empty())
-            c.chipset = chipset_from_string(j["chipset"]);
-
-        if (j.contains("storage") && !j["storage"].get<std::string>().empty())
-            c.storage = storage_from_string(j["storage"]);
-
-        if (j.contains("flash_stage") && !j["flash_stage"].get<std::string>().empty())
-            c.flash_stage = stage_from_string(j["flash_stage"]);
-
-        // Hamoa / Glymur are NVME only. Clamp here too, not just in the UI —
-        // /send can be POSTed by anything.
-        c.storage = clamp_storage(c.chipset, c.storage);
-
-        // ===== send command (ONLY ON CHANGE OR ALWAYS OK) =====
-        // Copy out of `c` before calling: set_auto_flash() takes these by
-        // const&, and Talker's connect() inside it blocks long enough for
-        // the client's own heartbeat thread (MSG_CLIENT_INSTALLER_PATH /
-        // MSG_CLIENT_DOWNLOAD_PATH) to overwrite clients_map[ip] with its
-        // stale value first — sending back exactly what we just tried to
-        // change. Local copies break that aliasing.
-        std::string auto_flash_str = std::to_string(c.server_get_auto_flash_status);
-        std::string installer_path_copy = c.installer_path;
-        std::string download_path_copy = c.download_path;
-        Chipset chipset_copy = c.chipset;
-        StorageType storage_copy = c.storage;
-        FlashStage flash_stage_copy = c.flash_stage;
 
         set_auto_flash(
             auto_flash_str,

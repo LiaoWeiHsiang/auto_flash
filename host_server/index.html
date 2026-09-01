@@ -256,6 +256,22 @@ input:checked + .slider:before {
   font-size: 14px;
 }
 
+.client-ip-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.client-target {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .client-device {
   font-weight: 500;
   color: var(--text-secondary);
@@ -828,10 +844,20 @@ function renderClientsOnce(clients) {
     row.id = `row_${c.ip}`;
     row.className = "client-row";
 
+    // 只有 auto_flash 本機 WebUI 的 /clients 才會帶 server_ip（送封包的目標
+    // server）；host_server 的 /clients 沒有這個欄位，targetLabel 就是空字串，
+    // 下面那行小字自然不會顯示。
+    const targetLabel = c.server_ip
+      ? (c.server_name ? `${c.server_name} (${c.server_ip})` : c.server_ip)
+      : '';
+
     row.innerHTML = `
       <div class="row-main">
         <div class="expand-icon" onclick="toggleComports('${c.ip}', event)">▶</div>
-        <div class="client-ip">${c.ip}</div>
+        <div class="client-ip-wrap">
+          <div class="client-ip">${c.ip}</div>
+          ${targetLabel ? `<div class="client-target" title="送封包到：${targetLabel}">→ ${targetLabel}</div>` : ''}
+        </div>
         <div class="client-device">${c.device}</div>
         <div class="heartbeat"></div>
         <div class="auto"></div>
